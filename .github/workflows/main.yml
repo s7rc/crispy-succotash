@@ -45,6 +45,8 @@ jobs:
           sudo chown -R jellyfin:jellyfin /var/lib/jellyfin /etc/jellyfin /var/cache/jellyfin
           
           # CRITICAL: Blow away permission locks on the workspace data folders so Jellyfin can write to them
+          mkdir -p "${{ github.workspace }}/private-meh/jellyfin-data/Movies"
+          sudo chown -R jellyfin:jellyfin /var/lib/jellyfin /etc/jellyfin /var/cache/jellyfin
           sudo chmod -R 777 "${{ github.workspace }}/private-meh"
           
           sudo systemctl start jellyfin
