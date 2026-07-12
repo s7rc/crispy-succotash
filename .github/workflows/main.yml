@@ -1,21 +1,45 @@
-name: Deploy Jellyfin via Cloudflare Tunnel
+name: Public Jellyfin Server (Private Sync)
 
 on: [workflow_dispatch]
 
 jobs:
-  jellyfin-server:
+  jellyfin-runner:
     runs-on: ubuntu-latest
     steps:
+      # Step 1: Clone the public workflow repo normally
+      - name: Checkout Public Repo
+        uses: actions/checkout@v4
+
+      # Step 2: Clone your private "meh" repo into a separate sub-folder
+      - name: Checkout Private Storage Repo
+        uses: actions/checkout@v4
+        with:
+          repository: 's7rc/meh'
+          token: ${{ secrets.MEH }} # Uses your secret PAT
+          path: 'private-meh' # Clones it directly into a folder named 'private-meh'
+
+      # Step 3: Install Jellyfin
       - name: Install Jellyfin Media Server
         run: |
           sudo apt-get update
           sudo apt-get install -y curl gnupg
-          # Import official Jellyfin GPG signing key
           curl -fsSL https://repo.jellyfin.org/ubuntu/jellyfin_team.gpg.key | sudo gpg --dearmor -o /etc/apt/trusted.gpg.d/jellyfin.gpg
-          # Add the repository
           echo "deb [arch=$(dpkg --print-architecture)] https://repo.jellyfin.org/ubuntu $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/jellyfin.list
           sudo apt-get update
           sudo apt-get install -y jellyfin
+          sudo systemctl stop jellyfin
+
+      # Step 4: Restore configs from the private repo folder
+      - name: Restore State from Private Repo Folder
+        run: |
+          if [ -d "${{ github.workspace }}/private-meh/jellyfin-data/var-lib" ]; then
+            echo "🔄 Found saved state in s7rc/meh. Restoring..."
+            sudo rsync -av "${{ github.workspace }}/private-meh/jellyfin-data/var-lib/" /var/lib/jellyfin/
+            sudo rsync -av "${{ github.workspace }}/private-meh/jellyfin-data/etc-jellyfin/" /etc/jellyfin/
+            sudo chown -R jellyfin:jellyfin /var/lib/jellyfin /etc/jellyfin
+          else
+            echo "🌱 No previous data found in private repo. Starting fresh configuration."
+          fi
           sudo systemctl start jellyfin
 
       - name: Install Cloudflared
@@ -23,19 +47,50 @@ jobs:
           curl -L --output cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
           sudo dpkg -i cloudflared.deb
 
-      - name: Launch Quick Tunnel
+      - name: Launch Tunnel
         run: |
-          # Start the tunnel with chunked encoding disabled to ensure smooth video streaming
           nohup cloudflared tunnel --url http://localhost:8096 --no-chunked-encoding > cloudflare.log 2>&1 &
-          
-          # Give the tunnel a few seconds to connect and register the random domain
           sleep 8
-          
           echo "=================================================="
           echo "          YOUR JELLYFIN STREAM LINK               "
           echo "=================================================="
           grep -o 'https://.*\.trycloudflare\.com' cloudflare.log || cat cloudflare.log
           echo "=================================================="
           
-          # Keep the GitHub Actions runner alive for the 6-hour max limit
-          sleep 21600
+          # Sleep for 5 hours (18000 seconds) then begin auto-save
+          sleep 18000
+
+      # Step 5: Stop Jellyfin, copy data back to private subfolder, and push to s7rc/meh
+      - name: Safe Shutdown & Push to s7rc/meh
+        if: always()
+        run: |
+          echo "🛑 Shutting down Jellyfin cleanly..."
+          sudo systemctl stop jellyfin
+          
+          # Ensure folders exist inside the private checkout path
+          mkdir -p "${{ github.workspace }}/private-meh/jellyfin-data/var-lib"
+          mkdir -p "${{ github.workspace }}/private-meh/jellyfin-data/etc-jellyfin"
+          
+          # Sync files down to the private repo folder
+          sudo rsync -av --delete /var/lib/jellyfin/ "${{ github.workspace }}/private-meh/jellyfin-data/var-lib/"
+          sudo rsync -av --delete /etc/jellyfin/ "${{ github.workspace }}/private-meh/jellyfin-data/etc-jellyfin/"
+          
+          # Change permissions so the git runner process can manipulate the files
+          sudo chown -R runner:docker "${{ github.workspace }}/private-meh/jellyfin-data"
+          
+          # Change directory over to the private repo to handle git push
+          cd "${{ github.workspace }}/private-meh"
+          
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          
+          git add jellyfin-data/
+          
+          if git diff-index --quiet HEAD; then
+            echo "ℹ️ No changes detected. Skipping push."
+          else
+            git commit -m "Automated Jellyfin State Backup [Skip CI]"
+            # Explicitly push using the PAT token context to avoid auth errors
+            git push origin HEAD
+            echo "💾 State successfully pushed back to private repo s7rc/meh!"
+          fi
