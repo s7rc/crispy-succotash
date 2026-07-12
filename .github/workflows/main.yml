@@ -116,3 +116,10 @@ jobs:
             git push origin HEAD
             echo "💾 Database securely pushed to s7rc/meh without corruption!"
           fi
+# Step 8: Export Logs for Debugging
+      - name: Upload Jellyfin Logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: jellyfin-server-logs
+          path: /var/log/jellyfin/
