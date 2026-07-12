@@ -1,0 +1,41 @@
+name: Deploy Jellyfin via Cloudflare Tunnel
+
+on: [workflow_dispatch]
+
+jobs:
+  jellyfin-server:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install Jellyfin Media Server
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y curl gnupg
+          # Import official Jellyfin GPG signing key
+          curl -fsSL https://repo.jellyfin.org/ubuntu/jellyfin_team.gpg.key | sudo gpg --dearmor -o /etc/apt/trusted.gpg.d/jellyfin.gpg
+          # Add the repository
+          echo "deb [arch=$(dpkg --print-architecture)] https://repo.jellyfin.org/ubuntu $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/jellyfin.list
+          sudo apt-get update
+          sudo apt-get install -y jellyfin
+          sudo systemctl start jellyfin
+
+      - name: Install Cloudflared
+        run: |
+          curl -L --output cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
+          sudo dpkg -i cloudflared.deb
+
+      - name: Launch Quick Tunnel
+        run: |
+          # Start the tunnel with chunked encoding disabled to ensure smooth video streaming
+          nohup cloudflared tunnel --url http://localhost:8096 --no-chunked-encoding > cloudflare.log 2>&1 &
+          
+          # Give the tunnel a few seconds to connect and register the random domain
+          sleep 8
+          
+          echo "=================================================="
+          echo "          YOUR JELLYFIN STREAM LINK               "
+          echo "=================================================="
+          grep -o 'https://.*\.trycloudflare\.com' cloudflare.log || cat cloudflare.log
+          echo "=================================================="
+          
+          # Keep the GitHub Actions runner alive for the 6-hour max limit
+          sleep 21600
