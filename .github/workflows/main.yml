@@ -94,27 +94,27 @@ jobs:
             https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
           sudo dpkg -i cloudflared.deb
 
-      # Step 6: Launch tunnel, update shortlink, and keep alive for 5 hours
+      # Step 6: Launch tunnel, write stable link, and keep alive for 5 hours
       - name: Launch Tunnel & Update Permanent Link
-        env:
-          DUB_API_KEY: ${{ secrets.api }}
-          DUB_LINK_ID: ${{ secrets.link }}
         run: |
           nohup cloudflared tunnel --url http://localhost:8096 --no-chunked-encoding > cloudflare.log 2>&1 &
           sleep 8
 
           CF_URL=$(grep -o 'https://.*\.trycloudflare\.com' cloudflare.log | head -1)
 
-          if [ ! -z "$DUB_API_KEY" ]; then
-            curl -s -X PATCH "https://api.dub.co/links/$DUB_LINK_ID" \
-              -H "Authorization: Bearer $DUB_API_KEY" \
-              -H "Content-Type: application/json" \
-              -d "{\"url\": \"$CF_URL\"}"
-          fi
+          # Write the live URL into the public repo — stable link never changes:
+          # https://raw.githubusercontent.com/${{ github.repository }}/main/STREAM.md
+          echo "$CF_URL" > STREAM.md
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add STREAM.md
+          git diff-index --quiet HEAD || git commit -m "stream live [skip ci]"
+          git push
 
           echo "=================================================="
           echo "          STREAM LINK LIVE                        "
           echo "=================================================="
+          echo "Stable link: https://raw.githubusercontent.com/${{ github.repository }}/main/STREAM.md"
           echo "Current CF Target: $CF_URL"
           echo "=================================================="
 
