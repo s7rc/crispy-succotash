@@ -53,10 +53,15 @@ jobs:
           mkdir -p "${{ github.workspace }}/private-meh/jellyfin-data/var-lib"
           mkdir -p "${{ github.workspace }}/private-meh/jellyfin-data/etc-jellyfin"
           
-          if [ -d "${{ github.workspace }}/private-meh/jellyfin-data/var-lib" ]; then
+          # FIX: Check for the actual DB file, not just the directory.
+          # mkdir -p above always creates the dir, so the old check was always true
+          # even on a fresh clone with no saved data.
+          if [ -f "${{ github.workspace }}/private-meh/jellyfin-data/var-lib/data/jellyfin.db" ]; then
             echo "🔄 Restoring saved database state..."
             sudo rsync -av "${{ github.workspace }}/private-meh/jellyfin-data/var-lib/" /var/lib/jellyfin/
             sudo rsync -av "${{ github.workspace }}/private-meh/jellyfin-data/etc-jellyfin/" /etc/jellyfin/
+          else
+            echo "ℹ️ No saved database found — Jellyfin will run first-time setup."
           fi
           
           # CRITICAL: Ensure jellyfin user owns the restored database completely before boot
@@ -108,11 +113,18 @@ jobs:
         if: always()
         run: |
           echo "🛑 Requesting Jellyfin system shutdown..."
+          
+          # FIX: Force a SQLite WAL checkpoint BEFORE stopping Jellyfin so all
+          # write-ahead log data is merged into the main .db file on disk.
+          # Without this, the copied jellyfin.db may be missing recent writes.
+          echo "💾 Forcing WAL checkpoint to flush all pending writes into jellyfin.db..."
+          sudo sqlite3 /var/lib/jellyfin/data/jellyfin.db "PRAGMA wal_checkpoint(TRUNCATE);" || true
+          
           sudo systemctl stop jellyfin
           
-          # SAFETY BUFFER: Wait 15 seconds for SQLite to fully close handles and flush WAL files
-          echo "⏳ Waiting for database write-ahead logs to merge cleanly..."
-          sleep 15
+          # SAFETY BUFFER: Wait 10 seconds for SQLite to fully release file handles
+          echo "⏳ Waiting for database to fully release..."
+          sleep 10
           
           # Sync files down to workspace
           sudo rsync -av --delete /var/lib/jellyfin/ "${{ github.workspace }}/private-meh/jellyfin-data/var-lib/"
