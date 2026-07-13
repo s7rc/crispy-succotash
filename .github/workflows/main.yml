@@ -97,8 +97,8 @@ jobs:
       # Step 6: Launch tunnel, update shortlink, and keep alive for 5 hours
       - name: Launch Tunnel & Update Permanent Link
         env:
-          DUB_API_KEY: ${{ secrets.DUB_API_KEY }}
-          DUB_LINK_ID: ${{ secrets.DUB_LINK_ID }}
+          DUB_API_KEY: ${{ secrets.api }}
+          DUB_LINK_ID: ${{ secrets.link }}
         run: |
           nohup cloudflared tunnel --url http://localhost:8096 --no-chunked-encoding > cloudflare.log 2>&1 &
           sleep 8
