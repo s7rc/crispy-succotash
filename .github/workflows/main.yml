@@ -26,8 +26,26 @@ jobs:
           curl -fsSL https://repo.jellyfin.org/ubuntu/jellyfin_team.gpg.key | sudo gpg --dearmor -o /etc/apt/trusted.gpg.d/jellyfin.gpg
           echo "deb [arch=$(dpkg --print-architecture)] https://repo.jellyfin.org/ubuntu $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/jellyfin.list
           sudo apt-get update
-          sudo apt-get install -y jellyfin
+          sudo apt-get install -y jellyfin acl
           sudo systemctl stop jellyfin
+
+        # Step 3.5: Force Grant Jellyfin R/W Access to the Workspace
+      - name: Grant Jellyfin user full access to workspace
+        run: |
+          # 1. Add jellyfin to the GitHub Actions default groups
+          sudo usermod -aG runner jellyfin
+          sudo usermod -aG docker jellyfin
+
+          # 2. Ensure parent directories can be traversed by external users
+          sudo chmod +x /home/runner /home/runner/work
+
+          # 3. Install ACL (Access Control Lists)
+
+          # 4. Force grant the jellyfin user Read/Write/Execute to the entire workspace
+          sudo setfacl -R -m u:jellyfin:rwx ${{ github.workspace }}
+
+          # 5. Set default ACL so any NEW files created also inherit these exact permissions
+          sudo setfacl -R -d -m u:jellyfin:rwx ${{ github.workspace }}
 
       # Step 4: Restore configs and fix permissions using dynamic paths
       - name: Restore State & Fix Permissions
