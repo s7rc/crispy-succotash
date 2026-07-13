@@ -1,0 +1,182 @@
+name: Public Jellyfin Server (Docker)
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 */4 * * *'  # Every 4 hours — overlaps with 4h50m sleep for zero downtime
+
+# Allow max 2 simultaneous runs (old dying + new booting)
+concurrency:
+  group: jellyfin-server
+  cancel-in-progress: false
+
+jobs:
+  jellyfin-runner:
+    runs-on: ubuntu-latest
+    steps:
+
+      # Step 1: Clone the public workflow repo
+      - name: Checkout Public Repo
+        uses: actions/checkout@v4
+
+      # Step 2: Clone your private storage repo
+      - name: Checkout Private Storage Repo
+        uses: actions/checkout@v4
+        with:
+          repository: 's7rc/meh'
+          token: ${{ secrets.MEH }}
+          path: 'private-meh'
+
+      # Step 3: Cache the Jellyfin Docker image
+      # Saves ~1-2 min per run. Cache key is weekly so it refreshes
+      # automatically to pick up new Jellyfin releases.
+      - name: Get cache week key
+        id: date
+        run: echo "week=$(date +'%Y-%U')" >> $GITHUB_OUTPUT
+
+      - name: Cache Jellyfin Docker Image
+        id: cache-image
+        uses: actions/cache@v4
+        with:
+          path: /tmp/jellyfin.tar.gz
+          key: jellyfin-image-${{ runner.os }}-${{ steps.date.outputs.week }}
+          restore-keys: jellyfin-image-${{ runner.os }}-
+
+      - name: Pull & Save Image (cache miss)
+        if: steps.cache-image.outputs.cache-hit != 'true'
+        run: |
+          echo "📥 Cache miss — pulling fresh image..."
+          docker pull lscr.io/linuxserver/jellyfin:latest
+          echo "🗜️ Compressing and saving to cache..."
+          docker save lscr.io/linuxserver/jellyfin:latest | gzip > /tmp/jellyfin.tar.gz
+          echo "✅ Image saved to cache!"
+
+      - name: Load Image (cache hit)
+        if: steps.cache-image.outputs.cache-hit == 'true'
+        run: |
+          echo "📦 Cache hit — loading image from cache..."
+          docker load -i /tmp/jellyfin.tar.gz
+          echo "✅ Image loaded!"
+
+      # Step 4: Restore saved Jellyfin config (if it exists)
+      - name: Restore Jellyfin Config
+        run: |
+          mkdir -p "${{ github.workspace }}/jellyfin-config"
+
+          if [ -f "${{ github.workspace }}/private-meh/jellyfin-data.tar.gz" ]; then
+            echo "📦 Found saved archive — extracting..."
+            tar -xzf "${{ github.workspace }}/private-meh/jellyfin-data.tar.gz" \
+              -C "${{ github.workspace }}/jellyfin-config/"
+            echo "✅ Config restored!"
+          else
+            echo "ℹ️ No archive found — Jellyfin will run first-time setup."
+          fi
+
+      # Step 5: Launch Jellyfin via Docker
+      # --network=host bypasses Docker NAT entirely — zero network overhead vs apt install
+      # PUID/PGID = runner's own user ID so all config files are owned by runner (no sudo ever)
+      - name: Start Jellyfin
+        run: |
+          docker run -d \
+            --name jellyfin \
+            --network=host \
+            -e PUID=$(id -u) \
+            -e PGID=$(id -g) \
+            -e TZ=Etc/UTC \
+            -v "${{ github.workspace }}/jellyfin-config:/config" \
+            lscr.io/linuxserver/jellyfin:latest
+
+          echo "⏳ Waiting for Jellyfin to be ready..."
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:8096/health > /dev/null 2>&1; then
+              echo "✅ Jellyfin is up!"
+              break
+            fi
+            sleep 2
+          done
+
+      # Step 5: Install Cloudflared
+      - name: Install Cloudflared
+        run: |
+          curl -L --output cloudflared.deb \
+            https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
+          sudo dpkg -i cloudflared.deb
+
+      # Step 6: Launch tunnel, write stable link, and keep alive for 5 hours
+      - name: Launch Tunnel & Update Permanent Link
+        env:
+          WORKER_URL: ${{ secrets.WORKER_URL }}
+        run: |
+          nohup cloudflared tunnel --url http://localhost:8096 --no-chunked-encoding > cloudflare.log 2>&1 &
+          sleep 8
+
+          CF_URL=$(grep -o 'https://.*\.trycloudflare\.com' cloudflare.log | head -1)
+
+          # Write the live URL into the public repo — stable link never changes:
+          # https://raw.githubusercontent.com/${{ github.repository }}/main/STREAM.md
+          echo "$CF_URL" > STREAM.md
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add STREAM.md
+          git diff-index --quiet HEAD || git commit -m "stream live [skip ci]"
+          git push
+
+          # Ping the Worker immediately after push so it busts its cache
+          # and serves the fresh URL instantly — no 60s wait
+          if [ ! -z "$WORKER_URL" ]; then
+            echo "🔄 Warming Worker cache..."
+            curl -sf "$WORKER_URL/_ping" > /dev/null 2>&1 || true
+            echo "✅ Worker notified!"
+          fi
+
+          echo "=================================================="
+          echo "          STREAM LINK LIVE                        "
+          echo "=================================================="
+          echo "Stable Worker URL: $WORKER_URL"
+          echo "Current CF Target: $CF_URL"
+          echo "=================================================="
+
+          # 4h50m — new runner boots at 4h, takes over, then this one saves & exits
+          sleep 17400
+
+      # Step 7: Stop Jellyfin, compress config, push single archive to private repo
+      - name: Safe Shutdown & Push to s7rc/meh
+        if: always()
+        run: |
+          echo "🛑 Stopping Jellyfin container..."
+          docker stop jellyfin
+          # docker stop sends SIGTERM — Jellyfin flushes SQLite cleanly on its own.
+
+          echo "🗜️ Compressing config into single archive..."
+          tar -czf "${{ github.workspace }}/private-meh/jellyfin-data.tar.gz" \
+            --exclude='cache' \
+            --exclude='transcodes' \
+            --exclude='log' \
+            -C "${{ github.workspace }}/jellyfin-config/" .
+
+          SIZE=$(du -sh "${{ github.workspace }}/private-meh/jellyfin-data.tar.gz" | cut -f1)
+          echo "📦 Archive size: $SIZE"
+
+          cd "${{ github.workspace }}/private-meh"
+
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add jellyfin-data.tar.gz
+
+          if git diff-index --quiet HEAD; then
+            echo "ℹ️ No changes detected. Skipping push."
+          else
+            git commit -m "Jellyfin backup — $(date +'%Y-%m-%d %H:%M') [Skip CI]"
+            git push origin HEAD
+            echo "💾 Backup pushed! ($SIZE compressed)"
+          fi
+
+      # Step 8: Upload logs for debugging
+      - name: Upload Jellyfin Logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: jellyfin-server-logs
+          path: "${{ github.workspace }}/jellyfin-config/log/"
+
