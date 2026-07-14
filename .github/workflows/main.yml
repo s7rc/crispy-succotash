@@ -64,7 +64,23 @@ jobs:
             echo "ℹ️ No archive found — Jellyfin will run first-time setup."
           fi
 
-      # Step 4: Launch Jellyfin via Docker
+      # Step 4.5: Generate .strm files + filtered Live TV M3U from network M3U
+      # URL-based categorisation (/series/ = show, plain ID = live), adult content nuked
+      - name: Generate Xtream .strm Library
+        env:
+          M3U_URL:  ${{ secrets.M3U_URL }}
+          STRM_OUT: "${{ github.workspace }}/jellyfin-config/media"
+          CACHE_DB: "${{ github.workspace }}/jellyfin-config/data/m3u2strm_cache.db"
+        run: |
+          if [ -z "$M3U_URL" ]; then
+            echo "ℹ️ No M3U_URL secret set — skipping strm generation"
+          else
+            mkdir -p "${{ github.workspace }}/jellyfin-config/media"
+            pip install requests -q
+            python3 generate_strm.py
+          fi
+
+      # Step 5: Launch Jellyfin via Docker
       # --network=host bypasses Docker NAT entirely — zero network overhead vs apt install
       # PUID/PGID = runner's own user ID so all config files are owned by runner (no sudo ever)
       - name: Start Jellyfin
@@ -76,6 +92,7 @@ jobs:
             -e PGID=$(id -g) \
             -e TZ=Etc/UTC \
             -v "${{ github.workspace }}/jellyfin-config:/config" \
+            -v "${{ github.workspace }}/jellyfin-config/media:/media:ro" \
             lscr.io/linuxserver/jellyfin:latest
 
           echo "⏳ Waiting for Jellyfin to be ready..."
@@ -96,6 +113,8 @@ jobs:
 
       # Step 6: Launch tunnel, write stable link, and keep alive for 5 hours
       - name: Launch Tunnel & Update Permanent Link
+        env:
+          WORKER_URL: ${{ secrets.WORKER_URL }}
         run: |
           nohup cloudflared tunnel --url http://localhost:8096 --no-chunked-encoding > cloudflare.log 2>&1 &
           sleep 8
@@ -111,15 +130,23 @@ jobs:
           git diff-index --quiet HEAD || git commit -m "stream live [skip ci]"
           git push
 
+          # Ping the Worker immediately after push so it busts its cache
+          # and serves the fresh URL instantly — no 60s wait
+          if [ ! -z "$WORKER_URL" ]; then
+            echo "🔄 Warming Worker cache..."
+            curl -sf "$WORKER_URL/_ping" > /dev/null 2>&1 || true
+            echo "✅ Worker notified!"
+          fi
+
           echo "=================================================="
           echo "          STREAM LINK LIVE                        "
           echo "=================================================="
-          echo "Stable link: https://raw.githubusercontent.com/${{ github.repository }}/main/STREAM.md"
+          echo "Stable Worker URL: $WORKER_URL"
           echo "Current CF Target: $CF_URL"
           echo "=================================================="
 
-          # Keep alive for 5 hours
-          sleep 18000
+          # 4h50m — new runner boots at 4h, takes over, then this one saves & exits
+          sleep 17400
 
       # Step 7: Stop Jellyfin, compress config, push single archive to private repo
       - name: Safe Shutdown & Push to s7rc/meh
@@ -130,11 +157,14 @@ jobs:
           # docker stop sends SIGTERM — Jellyfin flushes SQLite cleanly on its own.
 
           echo "🗜️ Compressing config into single archive..."
+          # Include ONLY what matters: DB + settings.
+          # Excludes everything else (plugins downloads, cache, logs, transcodes)
+          # This prevents plugin-downloaded content (e.g. IPTV libraries) bloating the archive.
           tar -czf "${{ github.workspace }}/private-meh/jellyfin-data.tar.gz" \
-            --exclude='cache' \
-            --exclude='transcodes' \
-            --exclude='log' \
-            -C "${{ github.workspace }}/jellyfin-config/" .
+            -C "${{ github.workspace }}/jellyfin-config/" \
+            data \
+            config \
+            media
 
           SIZE=$(du -sh "${{ github.workspace }}/private-meh/jellyfin-data.tar.gz" | cut -f1)
           echo "📦 Archive size: $SIZE"
@@ -161,4 +191,5 @@ jobs:
         with:
           name: jellyfin-server-logs
           path: "${{ github.workspace }}/jellyfin-config/log/"
+
 
