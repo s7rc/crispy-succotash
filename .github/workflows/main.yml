@@ -1,6 +1,9 @@
 name: Public Jellyfin Server (Docker)
 
-on: [workflow_dispatch]
+on:   
+  workflow_dispatch:
+  schedule:
+    - cron: '0 */5 * * *'
 
 jobs:
   jellyfin-runner:
