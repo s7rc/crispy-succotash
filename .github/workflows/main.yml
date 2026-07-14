@@ -68,7 +68,7 @@ jobs:
       # URL-based categorisation (/series/ = show, plain ID = live), adult content nuked
       - name: Generate Xtream .strm Library
         env:
-          M3U_URL:  ${{ secrets.M3U_URL }}
+          M3U_URL:  ${{ secrets.M3U }}
           STRM_OUT: "${{ github.workspace }}/jellyfin-config/media"
           CACHE_DB: "${{ github.workspace }}/jellyfin-config/data/m3u2strm_cache.db"
         run: |
