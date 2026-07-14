@@ -71,8 +71,11 @@ def init_db(db_path: Path):
 
 # ── Download M3U ───────────────────────────────────────────────────────────────
 print(f"📥 Downloading M3U...")
+headers = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36"
+}
 try:
-    r = requests.get(M3U_URL, timeout=60)
+    r = requests.get(M3U_URL, headers=headers, timeout=60)
     r.raise_for_status()
     lines = r.text.splitlines()
 except Exception as e:
