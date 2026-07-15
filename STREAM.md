@@ -1,1 +1,1 @@
-https://sent-pichunter-stream-bracelets.trycloudflare.com
+https://cradle-henderson-ads-tested.trycloudflare.com
