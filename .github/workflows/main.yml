@@ -3,7 +3,7 @@ name: Public Jellyfin Server (Docker)
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 */5 * * *'
+    - cron: '0 */4 * * *'
 
 jobs:
   jellyfin-runner:
@@ -11,13 +11,6 @@ jobs:
     steps:
       - name: Checkout Public Repo
         uses: actions/checkout@v4
-
-      - name: Checkout Private Storage Repo
-        uses: actions/checkout@v4
-        with:
-          repository: 's7rc/meh'
-          token: ${{ secrets.MEH }}
-          path: 'private-meh'
 
       - name: Get cache week key
         id: date
@@ -43,24 +36,20 @@ jobs:
           docker load -i /tmp/jellyfin.tar.gz
 
       - name: Restore Jellyfin Config & Metadata
-        env:
-          GH_TOKEN: ${{ secrets.MEH }}
         run: |
           mkdir -p "${{ github.workspace }}/jellyfin-config"
+          mkdir -p /tmp/hf-backup
 
-          if [ -f "${{ github.workspace }}/private-meh/jellyfin-data.tar.gz" ]; then
+          echo "📦 Installing Hugging Face CLI..."
+          pip install -U "huggingface_hub[cli]"
+          huggingface-cli login --token "${{ secrets.HF_TOKEN }}"
+
+          echo "☁️ Downloading backup from Hugging Face Bucket..."
+          hf sync "hf://buckets/solariy/ggg" "/tmp/hf-backup" || true
+
+          if [ -f "/tmp/hf-backup/jellyfin-data.tar.gz" ]; then
             echo "📦 Extracting DB..."
-            tar -xzf "${{ github.workspace }}/private-meh/jellyfin-data.tar.gz" -C "${{ github.workspace }}"
-          fi
-
-          echo "📦 Restoring images from GitHub Releases..."
-          cd "${{ github.workspace }}/private-meh"
-          if gh release view backup >/dev/null 2>&1; then
-            gh release download backup -p metadata.tar.gz -O /tmp/metadata.tar.gz || true
-            if [ -f "/tmp/metadata.tar.gz" ]; then
-              tar -xzf /tmp/metadata.tar.gz -C "${{ github.workspace }}"
-              echo "✅ Images restored!"
-            fi
+            tar -xzf "/tmp/hf-backup/jellyfin-data.tar.gz" -C "${{ github.workspace }}"
           fi
 
       - name: Generate Xtream .strm Library
@@ -125,39 +114,28 @@ jobs:
 
           sleep 14400
 
-      - name: Safe Shutdown & Push to s7rc/meh
+      - name: Safe Shutdown & Push to Hugging Face
         if: always()
-        env:
-          GH_TOKEN: ${{ secrets.MEH }}
         run: |
           docker stop jellyfin || true
 
-          cd "${{ github.workspace }}/private-meh"
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
           echo "🗜️ Compressing DB..."
-          tar -czf jellyfin-data.tar.gz -C "${{ github.workspace }}" \
-            --exclude="jellyfin-config/metadata" \
+          mkdir -p /tmp/hf-backup
+          tar -czf /tmp/hf-backup/jellyfin-data.tar.gz -C "${{ github.workspace }}" \
             --exclude="jellyfin-config/cache" \
             --exclude="jellyfin-config/log" \
             --exclude="jellyfin-config/transcodes" \
             jellyfin-config
+          
+          SIZE=$(du -sh /tmp/hf-backup/jellyfin-data.tar.gz | cut -f1)
+          echo "📦 Archive size: $SIZE"
 
-          git add jellyfin-data.tar.gz
-          if ! git diff-index --quiet HEAD; then
-            git commit --amend -m "Jellyfin DB Rolling Backup [Skip CI]" || git commit -m "Jellyfin DB Rolling Backup [Skip CI]"
-            git push origin HEAD --force
-          fi
-
-          if [ -d "${{ github.workspace }}/jellyfin-config/metadata" ]; then
-            echo "🗜️ Compressing images..."
-            tar -czf /tmp/metadata.tar.gz -C "${{ github.workspace }}" jellyfin-config/metadata
-
-            echo "☁️ Uploading images to GitHub Releases..."
-            gh release view backup >/dev/null 2>&1 || gh release create backup -t "Rolling Backup" -n "Stores metadata images"
-            gh release upload backup /tmp/metadata.tar.gz --clobber
-          fi
+          echo "☁️ Syncing to Hugging Face Bucket..."
+          export PATH="$HOME/.local/bin:$PATH"
+          pip install -U "huggingface_hub[cli]"
+          huggingface-cli login --token "${{ secrets.HF_TOKEN }}"
+          
+          hf sync "/tmp/hf-backup" "hf://buckets/solariy/ggg"
 
       - name: Upload Jellyfin Logs
         if: always()
