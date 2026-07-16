@@ -1,1 +1,1 @@
-https://jelly.minuet-spectrum.ts.net
+https://jelly-1.minuet-spectrum.ts.net
