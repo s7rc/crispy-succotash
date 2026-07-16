@@ -97,10 +97,10 @@ jobs:
           echo "🌐 Starting Tailscale Service and Funnel..."
           
           # Bind Jellyfin's local port to Tailscale's secure HTTPS
-          tailscale serve https / http://127.0.0.1:8096
+          sudo tailscale serve https / http://127.0.0.1:8096
           
           # Expose it to the public internet using Funnel
-          tailscale funnel on
+          sudo tailscale funnel on
           
           # Grab the assigned public URL
           TS_URL=$(tailscale status --json | jq -r .Self.DNSName)
