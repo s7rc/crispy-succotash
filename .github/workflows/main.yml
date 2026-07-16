@@ -1,0 +1,152 @@
+name: Public Jellyfin Server (Docker)
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 */4 * * *'
+
+jobs:
+  jellyfin-runner:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Public Repo
+        uses: actions/checkout@v4
+
+      - name: Get cache week key
+        id: date
+        run: echo "week=$(date +'%Y-%U')" >> $GITHUB_OUTPUT
+
+      - name: Cache Jellyfin Docker Image
+        id: cache-image
+        uses: actions/cache@v4
+        with:
+          path: /tmp/jellyfin.tar.gz
+          key: jellyfin-image-${{ runner.os }}-${{ steps.date.outputs.week }}
+          restore-keys: jellyfin-image-${{ runner.os }}-
+
+      - name: Pull & Save Image
+        if: steps.cache-image.outputs.cache-hit != 'true'
+        run: |
+          docker pull lscr.io/linuxserver/jellyfin:latest
+          docker save lscr.io/linuxserver/jellyfin:latest | gzip > /tmp/jellyfin.tar.gz
+
+      - name: Load Image
+        if: steps.cache-image.outputs.cache-hit == 'true'
+        run: |
+          docker load -i /tmp/jellyfin.tar.gz
+
+      - name: Restore Jellyfin Config & Metadata
+        run: |
+          mkdir -p "${{ github.workspace }}/jellyfin-config"
+          mkdir -p /tmp/hf-backup
+
+          echo "📦 Installing Hugging Face CLI..."
+          pip install -U "huggingface_hub[cli]"
+          hf auth login --token "${{ secrets.HF_TOKEN }}"
+
+          echo "☁️ Downloading backup from Hugging Face Bucket..."
+          hf sync "hf://buckets/solariy/ggg" "/tmp/hf-backup" || true
+
+          if [ -f "/tmp/hf-backup/jellyfin-data.tar.gz" ]; then
+            echo "📦 Extracting DB..."
+            tar -xzf "/tmp/hf-backup/jellyfin-data.tar.gz" -C "${{ github.workspace }}"
+          fi
+
+      - name: Generate Xtream .strm Library
+        env:
+          M3U_URL:  ${{ secrets.M3U_URL }}
+          STRM_OUT: "${{ github.workspace }}/jellyfin-config/media"
+          CACHE_DB: "${{ github.workspace }}/jellyfin-config/data/m3u2strm_cache.db"
+        run: |
+          if [ -z "$M3U_URL" ]; then
+            echo "ℹ️ No M3U_URL secret set — skipping strm generation"
+          else
+            mkdir -p "${{ github.workspace }}/jellyfin-config/media"
+            pip install requests -q
+            python3 generate_strm.py
+          fi
+
+      - name: Start Jellyfin
+        run: |
+          docker run -d \
+            --name jellyfin \
+            --network=host \
+            -e PUID=$(id -u) \
+            -e PGID=$(id -g) \
+            -e TZ=Etc/UTC \
+            -v "${{ github.workspace }}/jellyfin-config:/config" \
+            -v "${{ github.workspace }}/jellyfin-config/media:/media:ro" \
+            lscr.io/linuxserver/jellyfin:latest
+
+          echo "⏳ Waiting for Jellyfin to be ready..."
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:8096/health > /dev/null 2>&1; then
+              echo "✅ Jellyfin is up!"
+              break
+            fi
+            sleep 2
+          done
+
+      - name: Connect to Tailscale
+        uses: tailscale/github-action@v2
+        with:
+          authkey: ${{ secrets.TAILSCALE_AUTHKEY }}
+
+      - name: Launch Tailscale Funnel & Update Permanent Link
+        run: |
+          echo "🌐 Starting Tailscale Service and Funnel..."
+          
+          # Bind Jellyfin's local port to Tailscale
+          tailscale serve --bg 8096
+          
+          # Expose it to the public internet using Funnel
+          tailscale funnel --bg 8096
+          
+          # Grab the assigned public URL
+          TS_URL=$(tailscale status --json | jq -r .Self.DNSName)
+          FUNNEL_URL="https://${TS_URL%.}"
+
+          echo "=================================================="
+          echo "          STREAM LINK LIVE                        "
+          echo "=================================================="
+          echo "Your Public URL: $FUNNEL_URL"
+          echo "=================================================="
+
+          echo "$FUNNEL_URL" > STREAM.md
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add STREAM.md
+          git diff-index --quiet HEAD || git commit -m "stream live [skip ci]"
+          git push
+
+          sleep 14400
+
+      - name: Safe Shutdown & Push to Hugging Face
+        if: always()
+        run: |
+          docker stop jellyfin || true
+
+          echo "🗜️ Compressing DB..."
+          mkdir -p /tmp/hf-backup
+          tar -czf /tmp/hf-backup/jellyfin-data.tar.gz -C "${{ github.workspace }}" \
+            --exclude="jellyfin-config/cache" \
+            --exclude="jellyfin-config/log" \
+            --exclude="jellyfin-config/transcodes" \
+            jellyfin-config
+          
+          SIZE=$(du -sh /tmp/hf-backup/jellyfin-data.tar.gz | cut -f1)
+          echo "📦 Archive size: $SIZE"
+
+          echo "☁️ Syncing to Hugging Face Bucket..."
+          export PATH="$HOME/.local/bin:$PATH"
+          pip install -U "huggingface_hub[cli]"
+          hf auth login --token "${{ secrets.HF_TOKEN }}"
+          
+          hf sync "/tmp/hf-backup" "hf://buckets/solariy/ggg"
+
+      - name: Upload Jellyfin Logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: jellyfin-server-logs
+          path: "${{ github.workspace }}/jellyfin-config/log/"
