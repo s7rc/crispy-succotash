@@ -1,1 +1,1 @@
-https://deal-pubmed-nebraska-remedies.trycloudflare.com
+https://github-runnervm5mmn9.minuet-spectrum.ts.net
