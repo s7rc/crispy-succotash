@@ -1,1 +1,1 @@
-https://github-runnervm5mmn9.minuet-spectrum.ts.net
+https://j.minuet-spectrum.ts.net
