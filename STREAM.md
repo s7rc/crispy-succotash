@@ -1,1 +1,1 @@
-https://jelly.minuet-spectrum.ts.net
+https://equity-scoring-superior-subscribers.trycloudflare.com
