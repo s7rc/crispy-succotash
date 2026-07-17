@@ -1,1 +1,1 @@
-https://equity-scoring-superior-subscribers.trycloudflare.com
+https://catherine-solutions-developing-brisbane.trycloudflare.com
