@@ -1,1 +1,1 @@
-https://isaac-tip-from-myrtle.trycloudflare.com
+https://bye-repeat-core-coding.trycloudflare.com
