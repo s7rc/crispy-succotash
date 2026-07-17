@@ -1,1 +1,1 @@
-https://christopher-generally-chemistry-intensity.trycloudflare.com
+https://control-appeals-hat-research.trycloudflare.com
