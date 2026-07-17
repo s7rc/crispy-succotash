@@ -97,15 +97,19 @@ jobs:
         run: |
           echo "🌐 Starting Tailscale Service and Funnel..."
           
+          # Grab the assigned public URL
+          TS_URL=$(tailscale status --json | jq -r .Self.DNSName)
+          DOMAIN="${TS_URL%.}"
+          FUNNEL_URL="https://$DOMAIN"
+          
+          # Explicitly force Tailscale to fetch the Let's Encrypt SSL Certificate first!
+          sudo tailscale cert "$DOMAIN" || true
+          
           # Bind Jellyfin's local port to Tailscale's secure HTTPS
           sudo tailscale serve https / http://127.0.0.1:8096
           
           # Expose it to the public internet using Funnel
           sudo tailscale funnel on
-          
-          # Grab the assigned public URL
-          TS_URL=$(tailscale status --json | jq -r .Self.DNSName)
-          FUNNEL_URL="https://${TS_URL%.}"
 
           echo "=================================================="
           echo "          STREAM LINK LIVE                        "
