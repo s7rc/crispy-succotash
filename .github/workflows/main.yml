@@ -95,22 +95,25 @@ jobs:
       - name: Launch Tunnel & Update Permanent Link
         env:
           WORKER_URL: ${{ secrets.WORKER_URL }}
+          WORKER_SECRET: ${{ secrets.WORKER_SECRET }}
         run: |
           nohup cloudflared tunnel --url http://localhost:8096 --no-chunked-encoding > cloudflare.log 2>&1 &
           sleep 8
-
           CF_URL=$(grep -o 'https://.*\.trycloudflare\.com' cloudflare.log | head -1)
 
-          echo "$CF_URL" > STREAM.md
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add STREAM.md
-          git diff-index --quiet HEAD || git commit -m "stream live [skip ci]"
-          git push
-
-          if [ ! -z "$WORKER_URL" ]; then
-            curl -sf "$WORKER_URL/_ping" > /dev/null 2>&1 || true
+          if [ -z "$CF_URL" ]; then
+            echo "Failed to get tunnel URL, log contents:"
+            cat cloudflare.log
+            exit 1
           fi
+
+          echo "Tunnel URL: $CF_URL"
+
+          curl -s -X POST "$WORKER_URL/_update" \
+            -H "x-auth: $WORKER_SECRET" \
+            --data "$CF_URL"
+
+          echo "Pushed to Worker KV"
 
           sleep 14400
 
