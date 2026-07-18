@@ -1,1 +1,1 @@
-https://pierre-respected-stephen-egg.trycloudflare.com
+https://criticism-formation-percent-analysis.trycloudflare.com
