@@ -69,25 +69,11 @@ def init_db(db_path: Path):
     conn.commit()
     return conn
 
-# ── Download M3U ───────────────────────────────────────────────────────────────
-print(f"📥 Downloading M3U...")
-headers = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36"
-}
-try:
-    r = requests.get(M3U_URL, headers=headers, timeout=60)
-    r.raise_for_status()
-    lines = r.text.splitlines()
-except Exception as e:
-    print(f"❌ Download failed: {e}")
-    sys.exit(1)
-print(f"   {len(lines):,} lines — {len(lines)//2:,} entries approx")
+import urllib.parse
 
 # ── Parse + categorise ─────────────────────────────────────────────────────────
-live_m3u  = ["#EXTM3U"]
 nuked = 0
 skipped_headers = 0
-i = 0
 
 OUT.mkdir(parents=True, exist_ok=True)
 shows_dir      = OUT / "Shows"
@@ -104,104 +90,130 @@ cache_dict = {row[0]: row[1] for row in conn.execute("SELECT path, url FROM strm
 new_cache = {}
 seen_paths = set()
 
-while i < len(lines):
-    line = lines[i].strip()
+# ── Download and Process Each M3U ──────────────────────────────────────────────
+headers = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36"
+}
+urls = [u.strip() for u in M3U_URL.split(",") if u.strip()]
 
-    if not line.startswith("#EXTINF:"):
-        i += 1
+for u in urls:
+    print(f"\n📥 Downloading M3U from {u}...")
+    try:
+        r = requests.get(u, headers=headers, timeout=60)
+        r.raise_for_status()
+        lines = r.text.splitlines()
+    except Exception as e:
+        print(f"❌ Download failed for {u}: {e}")
         continue
+    
+    print(f"   {len(lines):,} lines — {len(lines)//2:,} entries approx")
+    
+    domain = urllib.parse.urlparse(u).netloc.replace("www.", "").split(":")[0]
+    provider_name = safe(domain.split(".")[0][:3]) or "custom"
+    
+    live_m3u = ["#EXTM3U"]
+    i = 0
+    
+    while i < len(lines):
+        line = lines[i].strip()
 
-    meta = line
-    url  = lines[i + 1].strip() if i + 1 < len(lines) else ""
-    i   += 2
-
-    # Name is everything after the last comma in #EXTINF
-    name = meta.split(",", 1)[-1].strip() if "," in meta else ""
-
-    # Skip section headers like "##### ENGLISH #####"
-    if re.match(r"^#+\s*[A-Z ]+\s*#+$", name):
-        skipped_headers += 1
-        continue
-
-    # Nuke adult content
-    if is_adult(name):
-        nuked += 1
-        continue
-
-    is_series = "/series/" in url.lower()
-    is_movie  = "/movie/"  in url.lower()
-
-    if is_series:
-        # ── Series → .strm ────────────────────────────────────────────────────
-        clean = strip_lang(name)          # "Bonanza S09 E11"
-        ep_m  = EP_PATTERN.search(clean)
-
-        if not ep_m:
-            # No episode pattern — skip (likely a trailer/extra)
+        if not line.startswith("#EXTINF:"):
+            i += 1
             continue
 
-        season  = int(ep_m.group(1))
-        episode = int(ep_m.group(2))
+        meta = line
+        url  = lines[i + 1].strip() if i + 1 < len(lines) else ""
+        i   += 2
 
-        # Show name = everything before the SxxExx, strip tags like [SUB]
-        show_raw = clean[:ep_m.start()].strip(" -_|")
-        show_raw = TAG_PATTERN.sub(" ", show_raw).strip()
-        show     = safe(show_raw) or "Unknown Show"
+        # Name is everything after the last comma in #EXTINF
+        name = meta.split(",", 1)[-1].strip() if "," in meta else ""
 
-        season_folder = f"Season {season:02d}"
-        filename      = f"{show} S{season:02d}E{episode:02d}.strm"
-        strm_path     = shows_dir / show / season_folder / filename
-        path_str      = str(strm_path)
+        # Skip section headers like "##### ENGLISH #####"
+        if re.match(r"^#+\s*[A-Z ]+\s*#+$", name):
+            skipped_headers += 1
+            continue
 
-        seen_paths.add(path_str)
-        new_cache[path_str] = url
-        shows_total += 1
+        # Nuke adult content
+        if is_adult(name):
+            nuked += 1
+            continue
 
-        if cache_dict.get(path_str) == url:
-            continue  # Cached!
+        is_series = "/series/" in url.lower()
+        is_movie  = "/movie/"  in url.lower()
 
-        write_strm(strm_path, url)
-        shows_written += 1
+        if is_series:
+            # ── Series → .strm ────────────────────────────────────────────────────
+            clean = strip_lang(name)          # "Bonanza S09 E11"
+            ep_m  = EP_PATTERN.search(clean)
 
-    elif is_movie:
-        # ── Movie → .strm ─────────────────────────────────────────────────────
-        # Format: "LANG - Movie Title - YEAR [Tag]"
-        clean = strip_lang(name)                           # "Movie Title - 2025 [VOSTFR]"
-        clean = TAG_PATTERN.sub("", clean).strip()         # "Movie Title - 2025"
+            if not ep_m:
+                # No episode pattern — skip (likely a trailer/extra)
+                continue
 
-        # Extract year from LAST " - YEAR" at end
-        year_m = re.search(r"\s*-\s*(\d{4})\s*$", clean)
-        if year_m:
-            year  = year_m.group(1)
-            title = clean[:year_m.start()].strip(" -")
+            season  = int(ep_m.group(1))
+            episode = int(ep_m.group(2))
+
+            # Show name = everything before the SxxExx, strip tags like [SUB]
+            show_raw = clean[:ep_m.start()].strip(" -_|")
+            show_raw = TAG_PATTERN.sub(" ", show_raw).strip()
+            show     = safe(show_raw) or "Unknown Show"
+
+            season_folder = f"Season {season:02d}"
+            filename      = f"{show} S{season:02d}E{episode:02d}.strm"
+            strm_path     = shows_dir / show / season_folder / filename
+            path_str      = str(strm_path)
+
+            seen_paths.add(path_str)
+            new_cache[path_str] = url
+            shows_total += 1
+
+            if cache_dict.get(path_str) == url:
+                continue  # Cached!
+
+            write_strm(strm_path, url)
+            shows_written += 1
+
+        elif is_movie:
+            # ── Movie → .strm ─────────────────────────────────────────────────────
+            # Format: "LANG - Movie Title - YEAR [Tag]"
+            clean = strip_lang(name)                           # "Movie Title - 2025 [VOSTFR]"
+            clean = TAG_PATTERN.sub("", clean).strip()         # "Movie Title - 2025"
+
+            # Extract year from LAST " - YEAR" at end
+            year_m = re.search(r"\s*-\s*(\d{4})\s*$", clean)
+            if year_m:
+                year  = year_m.group(1)
+                title = clean[:year_m.start()].strip(" -")
+            else:
+                year  = ""
+                title = clean.strip()
+
+            title  = safe(title) or "Unknown Movie"
+            folder = f"{title} ({year})" if year else title
+            strm_path = movies_dir / folder / f"{folder}.strm"
+            path_str  = str(strm_path)
+
+            seen_paths.add(path_str)
+            new_cache[path_str] = url
+            movies_total += 1
+
+            if cache_dict.get(path_str) == url:
+                continue  # Cached!
+
+            write_strm(strm_path, url)
+            movies_written += 1
+
         else:
-            year  = ""
-            title = clean.strip()
+            # ── Live TV → filtered M3U ─────────────────────────────────────────────
+            live_m3u.append(meta)
+            live_m3u.append(url)
 
-        title  = safe(title) or "Unknown Movie"
-        folder = f"{title} ({year})" if year else title
-        strm_path = movies_dir / folder / f"{folder}.strm"
-        path_str  = str(strm_path)
-
-        seen_paths.add(path_str)
-        new_cache[path_str] = url
-        movies_total += 1
-
-        if cache_dict.get(path_str) == url:
-            continue  # Cached!
-
-        write_strm(strm_path, url)
-        movies_written += 1
-
-    else:
-        # ── Live TV → filtered M3U ─────────────────────────────────────────────
-        live_m3u.append(meta)
-        live_m3u.append(url)
-
-# ── Write live TV M3U ──────────────────────────────────────────────────────────
-live_path = OUT / "live_clean.m3u"
-live_path.write_text("\n".join(live_m3u), encoding="utf-8")
-live_count = (len(live_m3u) - 1) // 2
+    # ── Write live TV M3U for this specific provider ───────────────────────────
+    if len(live_m3u) > 1:
+        live_path = OUT / f"live_clean_{provider_name}.m3u"
+        live_path.write_text("\n".join(live_m3u), encoding="utf-8")
+        live_count = (len(live_m3u) - 1) // 2
+        print(f"   📡 Wrote {live_count:,} live channels to {live_path.name}")
 
 # ── Cleanup & Save Cache ───────────────────────────────────────────────────────
 orphans = set(cache_dict.keys()) - seen_paths
