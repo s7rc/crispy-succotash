@@ -1,0 +1,149 @@
+name: Public Jellyfin Server (Docker)
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 */4 * * *'
+
+jobs:
+  jellyfin-runner:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Free Disk Space (Ubuntu)
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: false
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: false
+          swap-storage: true
+      - name: Checkout Public Repo
+        uses: actions/checkout@v4
+        
+
+      - name: Get cache week key
+        id: date
+        run: echo "week=$(date +'%Y-%U')" >> $GITHUB_OUTPUT
+
+      - name: Cache Jellyfin Docker Image
+        id: cache-image
+        uses: actions/cache@v4
+        with:
+          path: /tmp/jellyfin.tar.gz
+          key: jellyfin-image-${{ runner.os }}-${{ steps.date.outputs.week }}
+          restore-keys: jellyfin-image-${{ runner.os }}-
+
+      - name: Pull & Save Image
+        if: steps.cache-image.outputs.cache-hit != 'true'
+        run: |
+          docker pull lscr.io/linuxserver/jellyfin:latest
+          docker save lscr.io/linuxserver/jellyfin:latest | gzip > /tmp/jellyfin.tar.gz
+
+      - name: Load Image
+        if: steps.cache-image.outputs.cache-hit == 'true'
+        run: |
+          docker load -i /tmp/jellyfin.tar.gz
+
+      - name: Restore Jellyfin Config & Metadata
+        run: |
+          mkdir -p "${{ github.workspace }}/jellyfin-config"
+          mkdir -p /tmp/hf-backup
+
+          echo "📦 Installing Hugging Face CLI..."
+          pip install -U "huggingface_hub[cli]"
+          hf auth login --token "${{ secrets.HF_TOKEN }}"
+
+          echo "☁️ Downloading backup from Hugging Face Bucket..."
+          hf sync "hf://buckets/solariy/sss" "/tmp/hf-backup" || true
+
+          if [ -f "/tmp/hf-backup/jellyfin-data.tar.gz" ]; then
+            echo "📦 Extracting DB..."
+            tar -xzf "/tmp/hf-backup/jellyfin-data.tar.gz" -C "${{ github.workspace }}"
+          fi
+
+  
+          
+
+      - name: Start Jellyfin
+        run: |
+          docker run -d \
+            --name jellyfin \
+            --network=host \
+            -e PUID=$(id -u) \
+            -e PGID=$(id -g) \
+            -e TZ=Etc/UTC \
+            -v "${{ github.workspace }}/jellyfin-config:/config" \
+            -v "${{ github.workspace }}/jellyfin-config/media:/media:ro" \
+            lscr.io/linuxserver/jellyfin:latest
+
+          echo "⏳ Waiting for Jellyfin to be ready..."
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:8096/health > /dev/null 2>&1; then
+              echo "✅ Jellyfin is up!"
+              break
+            fi
+            sleep 2
+          done
+
+      - name: Install Cloudflared
+        run: |
+          curl -L --output cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
+          sudo dpkg -i cloudflared.deb
+
+      - name: Launch Tunnel & Update Link
+        env:
+          WORKER_URL: ${{ secrets.WORKER_URL }}
+          WORKER_SECRET: ${{ secrets.WORKER_SECRET }}
+        run: |
+          nohup cloudflared tunnel --url http://localhost:8096 --no-chunked-encoding > cloudflare.log 2>&1 &
+          sleep 8
+          CF_URL=$(grep -o 'https://.*\.trycloudflare\.com' cloudflare.log | head -1)
+          if [ -z "$CF_URL" ]; then
+            echo "Failed to get tunnel URL, log contents:"
+            cat cloudflare.log
+            exit 1
+          fi
+          echo "Tunnel URL: $CF_URL"
+
+          RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "$WORKER_URL/_update" \
+            -H "x-auth: $WORKER_SECRET" \
+            --data "$CF_URL")
+          BODY=$(echo "$RESPONSE" | head -n -1)
+          STATUS=$(echo "$RESPONSE" | tail -n 1)
+
+          echo "Worker response: $BODY (status $STATUS)"
+
+          if [ "$STATUS" != "200" ]; then
+            echo "Failed to update Worker KV"
+            exit 1
+          fi
+
+          echo "Successfully pushed to Worker KV"
+
+          sleep 14400
+
+      - name: Safe Shutdown & Push to Hugging Face
+        if: always()
+        run: |
+          docker stop jellyfin || true
+
+          echo "🗜️ Compressing DB..."
+          mkdir -p /tmp/hf-backup
+          tar -czf /tmp/hf-backup/jellyfin-data.tar.gz -C "${{ github.workspace }}" \
+            --exclude="jellyfin-config/cache" \
+            --exclude="jellyfin-config/log" \
+            --exclude="jellyfin-config/transcodes" \
+            jellyfin-config
+          
+          SIZE=$(du -sh /tmp/hf-backup/jellyfin-data.tar.gz | cut -f1)
+          echo "📦 Archive size: $SIZE"
+
+          echo "☁️ Syncing to Hugging Face Bucket..."
+          export PATH="$HOME/.local/bin:$PATH"
+          pip install -U "huggingface_hub[cli]"
+          hf auth login --token "${{ secrets.HF_TOKEN }}"
+          
+          hf sync "/tmp/hf-backup" "hf://buckets/solariy/sss"
+
