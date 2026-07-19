@@ -103,7 +103,7 @@ jobs:
           curl -L --output cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
           sudo dpkg -i cloudflared.deb
 
-      - name: Launch Tunnel & Update Permanent Link
+      - name: Launch Tunnel & Update Link
         env:
           WORKER_URL: ${{ secrets.WORKER_URL }}
           WORKER_SECRET: ${{ secrets.WORKER_SECRET }}
@@ -111,20 +111,27 @@ jobs:
           nohup cloudflared tunnel --url http://localhost:8096 --no-chunked-encoding > cloudflare.log 2>&1 &
           sleep 8
           CF_URL=$(grep -o 'https://.*\.trycloudflare\.com' cloudflare.log | head -1)
-
           if [ -z "$CF_URL" ]; then
             echo "Failed to get tunnel URL, log contents:"
             cat cloudflare.log
             exit 1
           fi
-
           echo "Tunnel URL: $CF_URL"
 
-          curl -s -X POST "$WORKER_URL/_update" \
+          RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "$WORKER_URL/_update" \
             -H "x-auth: $WORKER_SECRET" \
-            --data "$CF_URL"
+            --data "$CF_URL")
+          BODY=$(echo "$RESPONSE" | head -n -1)
+          STATUS=$(echo "$RESPONSE" | tail -n 1)
 
-          echo "Pushed to Worker KV"
+          echo "Worker response: $BODY (status $STATUS)"
+
+          if [ "$STATUS" != "200" ]; then
+            echo "Failed to update Worker KV"
+            exit 1
+          fi
+
+          echo "Successfully pushed to Worker KV"
 
           sleep 14400
 
