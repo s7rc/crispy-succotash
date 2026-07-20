@@ -56,7 +56,7 @@ jobs:
           hf auth login --token "${{ secrets.HF_TOKEN }}"
 
           echo "☁️ Downloading backup from Hugging Face Bucket..."
-          hf sync "hf://buckets/solariy/ggg" "/tmp/hf-backup" || true
+          hf sync "hf://buckets/solariy/sss" "/tmp/hf-backup" || true
 
           if [ -f "/tmp/hf-backup/jellyfin-data.tar.gz" ]; then
             echo "📦 Extracting DB..."
@@ -156,7 +156,7 @@ jobs:
           pip install -U "huggingface_hub[cli]"
           hf auth login --token "${{ secrets.HF_TOKEN }}"
           
-          hf sync "/tmp/hf-backup" "hf://buckets/solariy/ggg"
+          hf sync "/tmp/hf-backup" "hf://buckets/solariy/sss"
 
       - name: Upload Jellyfin Logs
         if: always()
