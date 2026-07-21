@@ -3,7 +3,7 @@ name: Public Jellyfin Server (Docker)
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 */4 * * *'
+    - cron: '0 */5 * * *'
 
 jobs:
   jellyfin-runner:
@@ -46,23 +46,52 @@ jobs:
         run: |
           docker load -i /tmp/jellyfin.tar.gz
 
-      - name: Restore Jellyfin Config & Metadata
+      - name: Restore Jellyfin Config & Metadata (virtual drive)
         run: |
-          mkdir -p "${{ github.workspace }}/jellyfin-config"
+          IMG_PATH="${{ github.workspace }}/jellyfin-data.img"
+          MOUNT_DIR="${{ github.workspace }}/jellyfin-config"
+          IMG_SIZE="500G"   # adjust to whatever you actually need
+
+          mkdir -p "$MOUNT_DIR"
           mkdir -p /tmp/hf-backup
 
           echo "📦 Installing Hugging Face CLI..."
           pip install -U "huggingface_hub[cli]"
           hf auth login --token "${{ secrets.HF_TOKEN }}"
 
-          echo "☁️ Downloading backup from Hugging Face Bucket..."
+          echo "☁️ Downloading backup image from Hugging Face Bucket..."
           hf sync "hf://buckets/solariy/sss" "/tmp/hf-backup" || true
 
-          if [ -f "/tmp/hf-backup/jellyfin-data.tar.gz" ]; then
-            echo "📦 Extracting DB..."
-            tar -xzf "/tmp/hf-backup/jellyfin-data.tar.gz" -C "${{ github.workspace }}"
+          if [ -f "/tmp/hf-backup/jellyfin-data.img.gz" ]; then
+            echo "🗜️ Found compressed image, decompressing..."
+            gunzip -c "/tmp/hf-backup/jellyfin-data.img.gz" > "$IMG_PATH"
+          elif [ -f "/tmp/hf-backup/jellyfin-data.img" ]; then
+            echo "📦 Found raw image, copying..."
+            cp "/tmp/hf-backup/jellyfin-data.img" "$IMG_PATH"
+          else
+            echo "🆕 No existing image found, creating a fresh one..."
+            truncate -s "$IMG_SIZE" "$IMG_PATH"
+            mkfs.ext4 -F "$IMG_PATH"
           fi
 
+          echo "🔌 Mounting virtual drive..."
+          sudo mount -o loop "$IMG_PATH" "$MOUNT_DIR"
+          sudo chown -R "$(id -u):$(id -g)" "$MOUNT_DIR"
+
+
+      - name: Generate Xtream .strm Library
+        env:
+          M3U_URL:  ${{ secrets.M3U_URL }}
+          STRM_OUT: "${{ github.workspace }}/jellyfin-config/media"
+          CACHE_DB: "${{ github.workspace }}/jellyfin-config/data/m3u2strm_cache.db"
+        run: |
+          if [ -z "$M3U_URL" ]; then
+            echo "ℹ️ No M3U_URL secret set — skipping strm generation"
+          else
+            mkdir -p "${{ github.workspace }}/jellyfin-config/media"
+            pip install requests -q
+            python3 generate_strm.py
+          fi
   
           
 
@@ -122,28 +151,28 @@ jobs:
 
           echo "Successfully pushed to Worker KV"
 
-          sleep 14400
+          sleep 18000
 
       - name: Safe Shutdown & Push to Hugging Face
         if: always()
         run: |
+          IMG_PATH="${{ github.workspace }}/jellyfin-data.img"
+          MOUNT_DIR="${{ github.workspace }}/jellyfin-config"
+
           docker stop jellyfin || true
 
-          echo "🗜️ Compressing DB..."
+          echo "🧹 Syncing filesystem before unmount..."
+          sync
+
+          echo "🔌 Unmounting virtual drive..."
+          sudo umount "$MOUNT_DIR"
+
           mkdir -p /tmp/hf-backup
-          tar -czf /tmp/hf-backup/jellyfin-data.tar.gz -C "${{ github.workspace }}" \
-            --exclude="jellyfin-config/cache" \
-            --exclude="jellyfin-config/log" \
-            --exclude="jellyfin-config/transcodes" \
-            jellyfin-config
-          
-          SIZE=$(du -sh /tmp/hf-backup/jellyfin-data.tar.gz | cut -f1)
+          echo "🗜️ Compressing image for upload..."
+          gzip -c "$IMG_PATH" > /tmp/hf-backup/jellyfin-data.img.gz
+
+          SIZE=$(du -sh /tmp/hf-backup/jellyfin-data.img.gz | cut -f1)
           echo "📦 Archive size: $SIZE"
 
-          echo "☁️ Syncing to Hugging Face Bucket..."
-          export PATH="$HOME/.local/bin:$PATH"
-          pip install -U "huggingface_hub[cli]"
-          hf auth login --token "${{ secrets.HF_TOKEN }}"
-          
+          echo "☁️ Uploading to Hugging Face Bucket..."
           hf sync "/tmp/hf-backup" "hf://buckets/solariy/sss"
-
