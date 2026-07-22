@@ -46,14 +46,18 @@ jobs:
         run: |
           docker load -i /tmp/jellyfin.tar.gz
 
-      - name: Restore Jellyfin Config & Metadata (virtual drive)
+      - name: Restore Jellyfin Config & Metadata (qcow2 virtual drive)
         run: |
-          IMG_PATH="${{ github.workspace }}/jellyfin-data.img"
+          IMG_PATH="${{ github.workspace }}/jellyfin-data.qcow2"
           MOUNT_DIR="${{ github.workspace }}/jellyfin-config"
-          IMG_SIZE="500G"
+          IMG_SIZE="5G"
 
           mkdir -p "$MOUNT_DIR"
           mkdir -p /tmp/hf-backup
+
+          echo "🔧 Installing qemu tools..."
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq qemu-utils
 
           echo "📦 Installing Hugging Face CLI..."
           pip install -U "huggingface_hub[cli]"
@@ -62,22 +66,25 @@ jobs:
           echo "☁️ Downloading backup image from Hugging Face Bucket..."
           hf sync "hf://buckets/solariy/sss" "/tmp/hf-backup" || true
 
-          if [ -f "/tmp/hf-backup/jellyfin-data.img.gz" ]; then
-            echo "🗜️ Found compressed image, decompressing (sparse-safe)..."
-            gunzip -c "/tmp/hf-backup/jellyfin-data.img.gz" | dd of="$IMG_PATH" bs=1M conv=sparse status=progress
-          elif [ -f "/tmp/hf-backup/jellyfin-data.img" ]; then
-            echo "📦 Found raw image, copying (sparse-safe)..."
-            cp --sparse=always "/tmp/hf-backup/jellyfin-data.img" "$IMG_PATH"
+          if [ -f "/tmp/hf-backup/jellyfin-data.qcow2" ]; then
+            echo "📦 Found existing qcow2 image..."
+            cp "/tmp/hf-backup/jellyfin-data.qcow2" "$IMG_PATH"
           else
-            echo "🆕 No existing image found, creating a fresh one..."
-            truncate -s "$IMG_SIZE" "$IMG_PATH"
-            mkfs.ext4 -F "$IMG_PATH"
+            echo "🆕 No existing image found, creating a fresh qcow2..."
+            qemu-img create -f qcow2 "$IMG_PATH" "$IMG_SIZE"
+            sudo modprobe nbd max_part=8
+            sudo qemu-nbd --connect=/dev/nbd0 "$IMG_PATH"
+            sudo mkfs.ext4 -F /dev/nbd0
+            sudo qemu-nbd --disconnect /dev/nbd0
           fi
 
-          echo "🔌 Mounting virtual drive..."
-          sudo mount -o loop "$IMG_PATH" "$MOUNT_DIR"
+          echo "🔌 Connecting qcow2 via qemu-nbd..."
+          sudo modprobe nbd max_part=8
+          sudo qemu-nbd --connect=/dev/nbd0 "$IMG_PATH"
+          sleep 1
+          sudo mount /dev/nbd0 "$MOUNT_DIR"
           sudo chown -R "$(id -u):$(id -g)" "$MOUNT_DIR"
-
+          
       - name: Generate Xtream .strm Library
         env:
           M3U_URL:  ${{ secrets.M3U_URL }}
@@ -155,23 +162,19 @@ jobs:
       - name: Safe Shutdown & Push to Hugging Face
         if: always()
         run: |
-          IMG_PATH="${{ github.workspace }}/jellyfin-data.img"
+          IMG_PATH="${{ github.workspace }}/jellyfin-data.qcow2"
           MOUNT_DIR="${{ github.workspace }}/jellyfin-config"
 
           docker stop jellyfin || true
-
-          echo "🧹 Syncing filesystem before unmount..."
           sync
-
-          echo "🔌 Unmounting virtual drive..."
           sudo umount "$MOUNT_DIR"
+          sudo qemu-nbd --disconnect /dev/nbd0
 
           mkdir -p /tmp/hf-backup
-          echo "🗜️ Compressing image for upload..."
-          gzip -c "$IMG_PATH" > /tmp/hf-backup/jellyfin-data.img.gz
+          cp "$IMG_PATH" /tmp/hf-backup/jellyfin-data.qcow2
 
-          SIZE=$(du -sh /tmp/hf-backup/jellyfin-data.img.gz | cut -f1)
-          echo "📦 Archive size: $SIZE"
+          SIZE=$(du -sh /tmp/hf-backup/jellyfin-data.qcow2 | cut -f1)
+          echo "📦 Real qcow2 size: $SIZE"
 
           echo "☁️ Uploading to Hugging Face Bucket..."
           hf sync "/tmp/hf-backup" "hf://buckets/solariy/sss"
