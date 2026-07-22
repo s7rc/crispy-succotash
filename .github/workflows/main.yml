@@ -170,11 +170,15 @@ jobs:
           sudo umount "$MOUNT_DIR"
           sudo qemu-nbd --disconnect /dev/nbd0
 
+          echo "🗜️ Compacting qcow2 (reclaim deleted space)..."
+          qemu-img convert -O qcow2 "$IMG_PATH" "${IMG_PATH}.compact"
+          mv "${IMG_PATH}.compact" "$IMG_PATH"
+
           mkdir -p /tmp/hf-backup
           cp "$IMG_PATH" /tmp/hf-backup/jellyfin-data.qcow2
 
           SIZE=$(du -sh /tmp/hf-backup/jellyfin-data.qcow2 | cut -f1)
-          echo "📦 Real qcow2 size: $SIZE"
+          echo "📦 Real qcow2 size after compaction: $SIZE"
 
           echo "☁️ Uploading to Hugging Face Bucket..."
           hf sync "/tmp/hf-backup" "hf://buckets/solariy/sss"
