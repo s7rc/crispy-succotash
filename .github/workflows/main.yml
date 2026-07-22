@@ -50,7 +50,7 @@ jobs:
         run: |
           IMG_PATH="${{ github.workspace }}/jellyfin-data.qcow2"
           MOUNT_DIR="${{ github.workspace }}/jellyfin-config"
-          IMG_SIZE="5G"
+          IMG_SIZE="500G"
 
           mkdir -p "$MOUNT_DIR"
           mkdir -p /tmp/hf-backup
