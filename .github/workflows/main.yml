@@ -50,7 +50,7 @@ jobs:
         run: |
           IMG_PATH="${{ github.workspace }}/jellyfin-data.img"
           MOUNT_DIR="${{ github.workspace }}/jellyfin-config"
-          IMG_SIZE="500G"   # adjust to whatever you actually need
+          IMG_SIZE="500G"
 
           mkdir -p "$MOUNT_DIR"
           mkdir -p /tmp/hf-backup
@@ -63,11 +63,11 @@ jobs:
           hf sync "hf://buckets/solariy/sss" "/tmp/hf-backup" || true
 
           if [ -f "/tmp/hf-backup/jellyfin-data.img.gz" ]; then
-            echo "🗜️ Found compressed image, decompressing..."
-            gunzip -c "/tmp/hf-backup/jellyfin-data.img.gz" > "$IMG_PATH"
+            echo "🗜️ Found compressed image, decompressing (sparse-safe)..."
+            gunzip -c "/tmp/hf-backup/jellyfin-data.img.gz" | dd of="$IMG_PATH" bs=1M conv=sparse status=progress
           elif [ -f "/tmp/hf-backup/jellyfin-data.img" ]; then
-            echo "📦 Found raw image, copying..."
-            cp "/tmp/hf-backup/jellyfin-data.img" "$IMG_PATH"
+            echo "📦 Found raw image, copying (sparse-safe)..."
+            cp --sparse=always "/tmp/hf-backup/jellyfin-data.img" "$IMG_PATH"
           else
             echo "🆕 No existing image found, creating a fresh one..."
             truncate -s "$IMG_SIZE" "$IMG_PATH"
@@ -77,7 +77,6 @@ jobs:
           echo "🔌 Mounting virtual drive..."
           sudo mount -o loop "$IMG_PATH" "$MOUNT_DIR"
           sudo chown -R "$(id -u):$(id -g)" "$MOUNT_DIR"
-
 
       - name: Generate Xtream .strm Library
         env:
