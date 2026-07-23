@@ -1,0 +1,130 @@
+name: Run OmniRoute
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: omniroute
+  cancel-in-progress: false
+
+env:
+  HF_REPO: solariy/ggg
+  IMG_NAME: data.qcow2
+  IMG_SIZE: 20G
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install qemu + hf tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-utils
+          sudo modprobe nbd max_part=8
+          pip install -U "huggingface_hub[cli]"
+
+      - name: Download existing qcow2 (or create new one)
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          python3 - <<'EOF'
+          import os
+          from huggingface_hub import hf_hub_download
+          try:
+              path = hf_hub_download(
+                  repo_id=os.environ["HF_REPO"],
+                  repo_type="dataset",
+                  filename=os.environ["IMG_NAME"],
+                  token=os.environ["HF_TOKEN"],
+              )
+              import shutil
+              shutil.copy(path, os.environ["IMG_NAME"])
+              print("Downloaded existing image")
+          except Exception as e:
+              print("No existing image found, will create new one:", e)
+          EOF
+
+      - name: Create qcow2 if it doesn't exist yet
+        run: |
+          if [ ! -f "$IMG_NAME" ]; then
+            qemu-img create -f qcow2 "$IMG_NAME" "$IMG_SIZE"
+            NEW_IMAGE=1
+          fi
+          echo "NEW_IMAGE=${NEW_IMAGE:-0}" >> $GITHUB_ENV
+
+      - name: Mount qcow2 via NBD
+        run: |
+          sudo qemu-nbd --connect=/dev/nbd0 "$IMG_NAME"
+          sleep 2
+          if [ "$NEW_IMAGE" = "1" ]; then
+            sudo mkfs.ext4 /dev/nbd0
+          fi
+          sudo mkdir -p /mnt/omniroute-data
+          sudo mount /dev/nbd0 /mnt/omniroute-data
+          sudo chmod 777 /mnt/omniroute-data
+
+      - name: Start OmniRoute (bind-mounted to the qcow2 disk)
+        env:
+          NEXT_PUBLIC_BASE_URL: ${{ secrets.BASE_URL }}
+        run: |
+          docker run -d --name omniroute \
+            --restart unless-stopped \
+            --stop-timeout 40 \
+            -e NEXT_PUBLIC_BASE_URL="$NEXT_PUBLIC_BASE_URL" \
+            -p 20128:20128 \
+            -v /mnt/omniroute-data:/app/data \
+            diegosouzapw/omniroute:latest
+
+      - name: Start Cloudflare Quick Tunnel
+        run: |
+          docker run -d --name cloudflared --network host \
+            cloudflare/cloudflared:latest \
+            tunnel --no-autoupdate --url http://localhost:20128
+
+      - name: Print tunnel URL
+        run: |
+          sleep 8
+          docker logs cloudflared 2>&1 | grep -o 'https://[a-zA-Z0-9.-]*trycloudflare.com' | head -1
+
+      - name: Keep alive
+        run: sleep 20000   # ~5.5 hours
+
+      - name: Stop containers cleanly
+        if: always()
+        run: |
+          docker stop omniroute cloudflared || true
+
+      - name: Unmount and disconnect NBD
+        if: always()
+        run: |
+          sudo umount /mnt/omniroute-data || true
+          sudo qemu-nbd --disconnect /dev/nbd0 || true
+
+      - name: Compact the qcow2 (shrink back down)
+        if: always()
+        run: |
+          qemu-img convert -O qcow2 "$IMG_NAME" compact-"$IMG_NAME"
+          mv compact-"$IMG_NAME" "$IMG_NAME"
+          qemu-img info "$IMG_NAME"
+
+      - name: Upload qcow2 back to Hugging Face
+        if: always()
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          python3 - <<'EOF'
+          import os
+          from huggingface_hub import HfApi
+          api = HfApi(token=os.environ["HF_TOKEN"])
+          api.upload_file(
+              path_or_fileobj=os.environ["IMG_NAME"],
+              path_in_repo=os.environ["IMG_NAME"],
+              repo_id=os.environ["HF_REPO"],
+              repo_type="dataset",
+          )
+          print("Uploaded")
+          EOF
