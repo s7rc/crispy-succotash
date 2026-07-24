@@ -8,9 +8,10 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  HF_REPO: solariy/ggg
+  HF_REPO: yourname/omniroute-data
   IMG_NAME: data.qcow2
   IMG_SIZE: 20G
+  WORKER_URL: https://su.sulus.workers.dev
 
 jobs:
   run:
@@ -27,12 +28,12 @@ jobs:
           sudo modprobe nbd max_part=8
           pip install -U "huggingface_hub[cli]"
 
-      - name: Download existing qcow2 (or create new one)
+      - name: Download existing qcow2 (or mark as new)
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
           python3 - <<'EOF'
-          import os
+          import os, shutil
           from huggingface_hub import hf_hub_download
           try:
               path = hf_hub_download(
@@ -41,20 +42,20 @@ jobs:
                   filename=os.environ["IMG_NAME"],
                   token=os.environ["HF_TOKEN"],
               )
-              import shutil
               shutil.copy(path, os.environ["IMG_NAME"])
               print("Downloaded existing image")
           except Exception as e:
-              print("No existing image found, will create new one:", e)
+              print("No existing image found:", e)
           EOF
 
       - name: Create qcow2 if it doesn't exist yet
         run: |
           if [ ! -f "$IMG_NAME" ]; then
             qemu-img create -f qcow2 "$IMG_NAME" "$IMG_SIZE"
-            NEW_IMAGE=1
+            echo "NEW_IMAGE=1" >> $GITHUB_ENV
+          else
+            echo "NEW_IMAGE=0" >> $GITHUB_ENV
           fi
-          echo "NEW_IMAGE=${NEW_IMAGE:-0}" >> $GITHUB_ENV
 
       - name: Mount qcow2 via NBD
         run: |
@@ -67,7 +68,7 @@ jobs:
           sudo mount /dev/nbd0 /mnt/omniroute-data
           sudo chmod 777 /mnt/omniroute-data
 
-      - name: Start OmniRoute (bind-mounted to the qcow2 disk)
+      - name: Start OmniRoute
         env:
           NEXT_PUBLIC_BASE_URL: ${{ secrets.BASE_URL }}
         run: |
@@ -85,18 +86,22 @@ jobs:
             cloudflare/cloudflared:latest \
             tunnel --no-autoupdate --url http://localhost:20128
 
-      - name: Print tunnel URL
+      - name: Report tunnel URL to Worker
         run: |
           sleep 8
-          docker logs cloudflared 2>&1 | grep -o 'https://[a-zA-Z0-9.-]*trycloudflare.com' | head -1
+          URL=$(docker logs cloudflared 2>&1 | grep -o 'https://[a-zA-Z0-9.-]*trycloudflare.com' | head -1)
+          echo "Tunnel URL: $URL"
+          curl -s -X POST "$WORKER_URL/report" \
+            -H "Authorization: Bearer ${{ secrets.TRIGGER_SECRET }}" \
+            -H "Content-Type: application/json" \
+            -d "{\"tunnelUrl\": \"$URL\"}"
 
       - name: Keep alive
         run: sleep 20000   # ~5.5 hours
 
       - name: Stop containers cleanly
         if: always()
-        run: |
-          docker stop omniroute cloudflared || true
+        run: docker stop omniroute cloudflared || true
 
       - name: Unmount and disconnect NBD
         if: always()
@@ -104,7 +109,7 @@ jobs:
           sudo umount /mnt/omniroute-data || true
           sudo qemu-nbd --disconnect /dev/nbd0 || true
 
-      - name: Compact the qcow2 (shrink back down)
+      - name: Compact the qcow2
         if: always()
         run: |
           qemu-img convert -O qcow2 "$IMG_NAME" compact-"$IMG_NAME"
@@ -128,3 +133,9 @@ jobs:
           )
           print("Uploaded")
           EOF
+
+      - name: Notify Worker job is done
+        if: always()
+        run: |
+          curl -s -X POST "$WORKER_URL/done" \
+            -H "Authorization: Bearer ${{ secrets.TRIGGER_SECRET }}"
