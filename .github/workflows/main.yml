@@ -98,14 +98,7 @@ jobs:
             pip install requests -q
             python3 generate_strm.py
           fi
-          
-      - name: Add Abyss Spotlight Init Script
-        run: |
-          MOUNT_DIR="${{ github.workspace }}/jellyfin-config"
-          mkdir -p "$MOUNT_DIR/custom-cont-init.d"
-          curl -fsSL -o "$MOUNT_DIR/custom-cont-init.d/abyss-spotlight.sh" \
-            https://raw.githubusercontent.com/AumGupta/abyss-jellyfin/main/scripts/docker/abyss-spotlight.sh
-          chmod +x "$MOUNT_DIR/custom-cont-init.d/abyss-spotlight.sh"
+
           
 
       - name: Start Jellyfin
