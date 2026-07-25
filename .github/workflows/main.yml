@@ -2,8 +2,6 @@ name: Public Jellyfin Server (Docker)
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: '0 */5 * * *'
 
 jobs:
   jellyfin-runner:
@@ -158,6 +156,12 @@ jobs:
           echo "Successfully pushed to Worker KV"
 
           sleep 18000
+
+      - name: Notify Worker job is done
+        if: always()
+        run: |
+          curl -s -X POST "https://cool.sulus.workers.dev/_done" \
+            -H "x-auth: ${{ secrets.WORKER_SECRET }}"
 
       - name: Safe Shutdown & Push to Hugging Face
         if: always()
