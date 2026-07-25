@@ -3,9 +3,14 @@ name: Public Jellyfin Server (Docker)
 on:
   workflow_dispatch:
 
+concurrency:
+  group: jellyfin-runner
+  cancel-in-progress: false
+
 jobs:
   jellyfin-runner:
     runs-on: ubuntu-latest
+    timeout-minutes: 350
     steps:
       - name: Free Disk Space (Ubuntu)
         uses: jlumbroso/free-disk-space@main
@@ -17,9 +22,9 @@ jobs:
           large-packages: true
           docker-images: false
           swap-storage: true
+
       - name: Checkout Public Repo
         uses: actions/checkout@v4
-        
 
       - name: Get cache week key
         id: date
@@ -48,7 +53,7 @@ jobs:
         run: |
           IMG_PATH="${{ github.workspace }}/jellyfin-data.qcow2"
           MOUNT_DIR="${{ github.workspace }}/jellyfin-config"
-          IMG_SIZE="500G"
+          IMG_SIZE="100G"
 
           mkdir -p "$MOUNT_DIR"
           mkdir -p /tmp/hf-backup
@@ -66,7 +71,8 @@ jobs:
 
           if [ -f "/tmp/hf-backup/jellyfin-data.qcow2" ]; then
             echo "📦 Found existing qcow2 image..."
-            cp "/tmp/hf-backup/jellyfin-data.qcow2" "$IMG_PATH"
+            mv "/tmp/hf-backup/jellyfin-data.qcow2" "$IMG_PATH"
+            qemu-img info "$IMG_PATH"
           else
             echo "🆕 No existing image found, creating a fresh qcow2..."
             qemu-img create -f qcow2 "$IMG_PATH" "$IMG_SIZE"
@@ -82,7 +88,11 @@ jobs:
           sleep 1
           sudo mount /dev/nbd0 "$MOUNT_DIR"
           sudo chown -R "$(id -u):$(id -g)" "$MOUNT_DIR"
-          
+
+          echo "💽 Disk space after restore:"
+          df -h "${{ github.workspace }}"
+
+
       - name: Generate Xtream .strm Library
         env:
           M3U_URL:  ${{ secrets.M3U_URL }}
@@ -96,8 +106,6 @@ jobs:
             pip install requests -q
             python3 generate_strm.py
           fi
-
-          
 
       - name: Start Jellyfin
         run: |
@@ -155,13 +163,14 @@ jobs:
 
           echo "Successfully pushed to Worker KV"
 
-          sleep 18000
+          sleep 17400   # ~4h50m, leaves buffer for restore+shutdown overhead
+
 
       - name: Notify Worker job is done
         if: always()
         run: |
           curl -s -X POST "https://cool.sulus.workers.dev/_done" \
-            -H "x-auth: ${{ secrets.WORKER_SECRET }}"
+            -H "x-auth: ${{ secrets.WORKER_SECRET }}""
 
       - name: Safe Shutdown & Push to Hugging Face
         if: always()
@@ -171,6 +180,10 @@ jobs:
 
           docker stop jellyfin || true
           sync
+
+          echo "✂️ Trimming filesystem to release deleted blocks..."
+          sudo fstrim -v "$MOUNT_DIR" || true
+
           sudo umount "$MOUNT_DIR"
           sudo qemu-nbd --disconnect /dev/nbd0
 
@@ -178,11 +191,13 @@ jobs:
           qemu-img convert -O qcow2 "$IMG_PATH" "${IMG_PATH}.compact"
           mv "${IMG_PATH}.compact" "$IMG_PATH"
 
-          mkdir -p /tmp/hf-backup
-          cp "$IMG_PATH" /tmp/hf-backup/jellyfin-data.qcow2
-
-          SIZE=$(du -sh /tmp/hf-backup/jellyfin-data.qcow2 | cut -f1)
+          SIZE=$(du -sh "$IMG_PATH" | cut -f1)
           echo "📦 Real qcow2 size after compaction: $SIZE"
+          qemu-img info "$IMG_PATH"
 
           echo "☁️ Uploading to Hugging Face Bucket..."
+          mkdir -p /tmp/hf-backup
+          mv "$IMG_PATH" /tmp/hf-backup/jellyfin-data.qcow2
           hf sync "/tmp/hf-backup" "hf://buckets/solariy/sss"
+
+
