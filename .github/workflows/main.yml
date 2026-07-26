@@ -170,7 +170,7 @@ jobs:
         if: always()
         run: |
           curl -s -X POST "https://cool.sulus.workers.dev/_done" \
-            -H "x-auth: ${{ secrets.WORKER_SECRET }}""
+            -H "x-auth: ${{ secrets.WORKER_SECRET }}"
 
       - name: Safe Shutdown & Push to Hugging Face
         if: always()
