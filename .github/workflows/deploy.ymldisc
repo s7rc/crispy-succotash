@@ -8,7 +8,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  HF_REPO: yourname/omniroute-data
+  HF_REPO: solariy/omniroute-data
   IMG_NAME: data.qcow2
   IMG_SIZE: 20G
   WORKER_URL: https://su.sulus.workers.dev
