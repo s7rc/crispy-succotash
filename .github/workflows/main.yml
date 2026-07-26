@@ -92,6 +92,15 @@ jobs:
           echo "💽 Disk space after restore:"
           df -h "${{ github.workspace }}"
 
+      - name: Install Abyss Spotlight Theme (init script)
+        run: |
+          MOUNT_DIR="${{ github.workspace }}/jellyfin-config"
+          mkdir -p "$MOUNT_DIR/custom-cont-init.d"
+          curl -sSL -o "$MOUNT_DIR/custom-cont-init.d/abyss-spotlight.sh" \
+            https://raw.githubusercontent.com/AumGupta/abyss-jellyfin/main/scripts/docker/abyss-spotlight.sh
+          chmod +x "$MOUNT_DIR/custom-cont-init.d/abyss-spotlight.sh"
+          echo "✅ Abyss init script installed"
+
 
       - name: Generate Xtream .strm Library
         env:
@@ -106,6 +115,14 @@ jobs:
             pip install requests -q
             python3 generate_strm.py
           fi
+
+      - name: Sync  Library from Hugging Face
+        run: |
+          MOUNT_DIR="${{ github.workspace }}/jellyfin-config"
+          mkdir -p "$MOUNT_DIR/media/Music"
+          echo "🎵 Syncing music library..."
+          hf sync "hf://buckets/solariy/music" "$MOUNT_DIR/media/Music"
+          echo "✅ Music sync complete"
 
       - name: Start Jellyfin
         run: |
