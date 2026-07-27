@@ -121,18 +121,9 @@ jobs:
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
-          python3 - <<'EOF'
-          import os
-          from huggingface_hub import HfApi
-          api = HfApi(token=os.environ["HF_TOKEN"])
-          api.upload_file(
-              path_or_fileobj=os.environ["IMG_NAME"],
-              path_in_repo=os.environ["IMG_NAME"],
-              repo_id=os.environ["HF_REPO"],
-              repo_type="dataset",
-          )
-          print("Uploaded")
-          EOF
+          mkdir -p /tmp/hf-backup
+          mv "$IMG_PATH" /tmp/hf-backup/jellyfin-data.qcow2
+          hf sync "/tmp/hf-backup" "hf://buckets/solariy/ggg"
 
       - name: Notify Worker job is done
         if: always()
