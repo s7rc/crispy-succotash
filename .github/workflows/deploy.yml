@@ -122,8 +122,11 @@ jobs:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
           mkdir -p /tmp/hf-backup
-          mv "$IMG_PATH" /tmp/hf-backup/jellyfin-data.qcow2
-          hf sync "/tmp/hf-backup" "hf://buckets/solariy/ggg"
+          # Move and rename to match the target file name
+          mv "$IMG_NAME" /tmp/hf-backup/"$IMG_NAME"
+          
+          # Sync using the full hf://buckets/ URI format
+          hf sync /tmp/hf-backup "hf://buckets/$HF_REPO"
 
       - name: Notify Worker job is done
         if: always()
