@@ -30,23 +30,16 @@ jobs:
 
       - name: Download existing qcow2 (or mark as new)
         env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+         HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
-          python3 - <<'EOF'
-          import os, shutil
-          from huggingface_hub import hf_hub_download
-          try:
-              path = hf_hub_download(
-                  repo_id=os.environ["HF_REPO"],
-                  repo_type="dataset",
-                  filename=os.environ["IMG_NAME"],
-                  token=os.environ["HF_TOKEN"],
-              )
-              shutil.copy(path, os.environ["IMG_NAME"])
-              print("Downloaded existing image")
-          except Exception as e:
-              print("No existing image found:", e)
-          EOF
+         mkdir -p /tmp/hf-backup
+         hf sync "hf://buckets/$HF_REPO" /tmp/hf-backup || true
+         if [ -f /tmp/hf-backup/"$IMG_NAME" ]; then
+         mv /tmp/hf-backup/"$IMG_NAME" "$IMG_NAME"
+         echo "Downloaded existing image"
+         else
+         echo "No existing image found"
+         fi
 
       - name: Create qcow2 if it doesn't exist yet
         run: |
