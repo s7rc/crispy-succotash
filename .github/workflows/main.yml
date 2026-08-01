@@ -54,6 +54,9 @@ jobs:
           docker load -i /tmp/jellyfin.tar.gz
 
       - name: Restore Jellyfin Config & Metadata (qcow2 virtual drive)
+        env:
+          HFGAG_TOKEN: ${{ secrets.HFGAG }}
+          REPO_PATH: ${{ secrets.REPO }}
         run: |
           IMG_PATH="${{ github.workspace }}/jellyfin-data.qcow2"
           MOUNT_DIR="${{ github.workspace }}/jellyfin-config"
@@ -68,10 +71,10 @@ jobs:
 
           echo "📦 Installing Hugging Face CLI..."
           pip install -U "huggingface_hub[cli]"
-          hf auth login --token "${{ secrets.HF_TOKEN }}"
+          hf auth login --token "$HFGAG_TOKEN"
 
-          echo "☁️ Downloading backup image from Hugging Face Bucket..."
-          hf sync "hf://buckets/solariy/sss" "/tmp/hf-backup" || true
+          echo "☁️ Downloading backup image from Hugging Face Repository ($REPO_PATH)..."
+          hf sync "hf://$REPO_PATH" "/tmp/hf-backup" || true
 
           if [ -f "/tmp/hf-backup/jellyfin-data.qcow2" ]; then
             echo "📦 Found existing qcow2 image..."
@@ -119,11 +122,16 @@ jobs:
             python3 generate_strm.py
           fi
 
-      - name: Sync Music Library from Hugging Face (Incremental)
+      - name: Sync Music Library from Hugging Face (Original Creds)
+        env:
+          HF_ORIGINAL_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
           MOUNT_DIR="${{ github.workspace }}/jellyfin-config"
           MUSIC_DIR="$MOUNT_DIR/media/Music"
           mkdir -p "$MUSIC_DIR"
+
+          echo "🔑 Logging in with original HF token for music sync..."
+          hf auth login --token "$HF_ORIGINAL_TOKEN"
 
           echo "🎵 Syncing music library (pulling new tracks only)..."
           hf sync "hf://buckets/solariy/music" "$MUSIC_DIR"
@@ -195,6 +203,9 @@ jobs:
 
       - name: Safe Shutdown & Push to Hugging Face
         if: always()
+        env:
+          HFGAG_TOKEN: ${{ secrets.HFGAG }}
+          REPO_PATH: ${{ secrets.REPO }}
         run: |
           IMG_PATH="${{ github.workspace }}/jellyfin-data.qcow2"
           MOUNT_DIR="${{ github.workspace }}/jellyfin-config"
@@ -212,7 +223,10 @@ jobs:
           echo "📦 Real qcow2 size after compaction: $SIZE"
           qemu-img info "$IMG_PATH"
 
-          echo "☁️ Uploading to Hugging Face Bucket..."
+          echo "🔑 Logging in with HFGAG token..."
+          hf auth login --token "$HFGAG_TOKEN"
+
+          echo "☁️ Uploading to Hugging Face ($REPO_PATH)..."
           mkdir -p /tmp/hf-backup
           mv "$IMG_PATH" /tmp/hf-backup/jellyfin-data.qcow2
-          hf sync "/tmp/hf-backup" "hf://buckets/solariy/sss"
+          hf sync "/tmp/hf-backup" "hf://$REPO_PATH"
