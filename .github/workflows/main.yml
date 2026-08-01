@@ -2,7 +2,11 @@ name: Public Jellyfin Server (Docker)
 
 on:
   workflow_dispatch:
+  schedule:
+    # Runs every 5 hours (00:00, 05:00, 10:00, 15:00, 20:00 UTC)
+    - cron: '0 */5 * * *'
 
+# Ensures seamless handoff: Job #2 waits for Job #1 to finish and push data before starting
 concurrency:
   group: jellyfin-runner
   cancel-in-progress: false
@@ -101,10 +105,9 @@ jobs:
           chmod +x "$MOUNT_DIR/custom-cont-init.d/abyss-spotlight.sh"
           echo "✅ Abyss init script installed"
 
-
       - name: Generate Xtream .strm Library
         env:
-          M3U_URL:  ${{ secrets.M3U_URL }}
+          M3U_URL: ${{ secrets.M3U_URL }}
           STRM_OUT: "${{ github.workspace }}/jellyfin-config/media"
           CACHE_DB: "${{ github.workspace }}/jellyfin-config/data/m3u2strm_cache.db"
         run: |
@@ -116,12 +119,14 @@ jobs:
             python3 generate_strm.py
           fi
 
-      - name: Sync  Library from Hugging Face
+      - name: Sync Music Library from Hugging Face (Incremental)
         run: |
           MOUNT_DIR="${{ github.workspace }}/jellyfin-config"
-          mkdir -p "$MOUNT_DIR/media/Music"
-          echo "🎵 Syncing music library..."
-          hf sync "hf://buckets/solariy/music" "$MOUNT_DIR/media/Music"
+          MUSIC_DIR="$MOUNT_DIR/media/Music"
+          mkdir -p "$MUSIC_DIR"
+
+          echo "🎵 Syncing music library (pulling new tracks only)..."
+          hf sync "hf://buckets/solariy/music" "$MUSIC_DIR"
           echo "✅ Music sync complete"
 
       - name: Start Jellyfin
@@ -180,8 +185,7 @@ jobs:
 
           echo "Successfully pushed to Worker KV"
 
-          sleep 17400   # ~4h50m, leaves buffer for restore+shutdown overhead
-
+          sleep 17400   # ~4h50m runner uptime
 
       - name: Notify Worker job is done
         if: always()
@@ -204,7 +208,6 @@ jobs:
           sudo umount "$MOUNT_DIR"
           sudo qemu-nbd --disconnect /dev/nbd0
 
-
           SIZE=$(du -sh "$IMG_PATH" | cut -f1)
           echo "📦 Real qcow2 size after compaction: $SIZE"
           qemu-img info "$IMG_PATH"
@@ -213,5 +216,3 @@ jobs:
           mkdir -p /tmp/hf-backup
           mv "$IMG_PATH" /tmp/hf-backup/jellyfin-data.qcow2
           hf sync "/tmp/hf-backup" "hf://buckets/solariy/sss"
-
-
