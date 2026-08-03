@@ -67,7 +67,7 @@ jobs:
 
           echo "🔧 Installing qemu tools..."
           sudo apt-get update -qq
-          sudo apt-get install -y -qq qemu-utils
+          sudo apt-get install -y -qq qemu-utils yt-dlp
 
           echo "📦 Installing Hugging Face CLI..."
           pip install -U "huggingface_hub[cli]"
