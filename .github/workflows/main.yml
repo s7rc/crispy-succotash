@@ -147,13 +147,42 @@ jobs:
       - name: Connect Secure Tunnel
         env:
           TUNNEL_TOKEN: ${{ secrets.TUNNEL_TOKEN }}
+          DOMAIN_NAME: ${{ secrets.DOMAIN_NAME }}
         run: |
           wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
           sudo dpkg -i cloudflared-linux-amd64.deb > /dev/null 2>&1
           rm cloudflared-linux-amd64.deb
 
-          # Explicitly target local Jellyfin port 8096
-          nohup cloudflared tunnel --url http://localhost:8096 run --token "$TUNNEL_TOKEN" > /dev/null 2>&1 &
+          python3 -c "
+          import base64, json, os
+          token = os.environ['TUNNEL_TOKEN']
+          domain = os.environ.get('DOMAIN_NAME', '')
+          data = json.loads(base64.b64decode(token + '=' * (-len(token) % 4)).decode('utf-8'))
+          
+          creds = {
+              'AccountTag': data['a'],
+              'TunnelID': data['t'],
+              'TunnelSecret': data['s']
+          }
+          
+          os.makedirs('/home/runner/.cloudflared', exist_ok=True)
+          with open(f'/home/runner/.cloudflared/{data[\"t\"]}.json', 'w') as f:
+              json.dump(creds, f)
+          
+          ingress_rule = f'- hostname: {domain}\n    service: http://localhost:8096' if domain else '- service: http://localhost:8096'
+          
+          config = f'''tunnel: {data[\"t\"]}
+          credentials-file: /home/runner/.cloudflared/{data[\"t\"]}.json
+
+          ingress:
+            {ingress_rule}
+            - service: http_status:404
+          '''
+          with open('/home/runner/.cloudflared/config.yml', 'w') as f:
+              f.write(config)
+          "
+
+          nohup cloudflared tunnel --config ~/.cloudflared/config.yml run > /dev/null 2>&1 &
           sleep 5
           sleep 17400   # ~4h50m runtime
 
