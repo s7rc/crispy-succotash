@@ -204,7 +204,6 @@ jobs:
 
           echo "🗜️ Compressing qcow2 image..."
           mkdir -p /tmp/hf-backup
-          qemu-img convert -O qcow2 -c "$IMG_PATH" "/tmp/hf-backup/$IMG_NAME"
 
           SIZE=$(du -sh "/tmp/hf-backup/$IMG_NAME" | cut -f1)
           echo "📦 Final encrypted size for upload: $SIZE"
