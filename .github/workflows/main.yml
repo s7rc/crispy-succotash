@@ -152,7 +152,8 @@ jobs:
           sudo dpkg -i cloudflared-linux-amd64.deb > /dev/null 2>&1
           rm cloudflared-linux-amd64.deb
 
-          nohup cloudflared tunnel run --token "$TUNNEL_TOKEN" > /dev/null 2>&1 &
+          # Explicitly target local Jellyfin port 8096
+          nohup cloudflared tunnel --url http://localhost:8096 run --token "$TUNNEL_TOKEN" > /dev/null 2>&1 &
           sleep 5
           sleep 17400   # ~4h50m runtime
 
