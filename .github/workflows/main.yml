@@ -1,12 +1,11 @@
-name: Public Jellyfin Server (Docker)
+name: Public Server (Docker)
 
 on:
   workflow_dispatch:
   schedule:
-    # Runs every 5 hours (00:00, 05:00, 10:00, 15:00, 20:00 UTC)
+    # Runs every 5 hours
     - cron: '0 */5 * * *'
 
-# Ensures seamless handoff: Job #2 waits for Job #1 to finish and push data before starting
 concurrency:
   group: jellyfin-runner
   cancel-in-progress: false
@@ -27,7 +26,7 @@ jobs:
           docker-images: false
           swap-storage: true
 
-      - name: Checkout Public Repo
+      - name: Checkout Repo
         uses: actions/checkout@v4
 
       - name: Get cache week key
@@ -53,51 +52,63 @@ jobs:
         run: |
           docker load -i /tmp/jellyfin.tar.gz
 
-      - name: Restore Jellyfin Config & Metadata (qcow2 virtual drive)
+      - name: Restore LUKS2 Encrypted Config (qcow2 virtual drive)
         env:
           HFGAG_TOKEN: ${{ secrets.HFGAG }}
-          REPO_PATH: ${{ secrets.REPO }}
+          PUBLIC_REPO: ${{ secrets.PUBLIC_REPO }}
+          LUKS_PASSPHRASE: ${{ secrets.LUKS_PASSPHRASE }}
         run: |
-          IMG_PATH="${{ github.workspace }}/jellyfin-data.qcow2"
+          IMG_NAME="sys-core.bin"
+          IMG_PATH="${{ github.workspace }}/$IMG_NAME"
           MOUNT_DIR="${{ github.workspace }}/jellyfin-config"
-          IMG_SIZE="100G"
+          IMG_SIZE="200G"
 
           mkdir -p "$MOUNT_DIR"
           mkdir -p /tmp/hf-backup
 
-          echo "🔧 Installing qemu tools..."
+          echo "🔧 Installing qemu & cryptsetup tools..."
           sudo apt-get update -qq
-          sudo apt-get install -y -qq qemu-utils yt-dlp
+          sudo apt-get install -y -qq qemu-utils cryptsetup yt-dlp
 
           echo "📦 Installing Hugging Face CLI..."
-          pip install -U "huggingface_hub[cli]"
+          pip install -U "huggingface_hub[cli]" -q
           hf auth login --token "$HFGAG_TOKEN"
 
-          echo "☁️ Downloading backup image from Hugging Face Repository ($REPO_PATH)..."
-          hf sync "hf://$REPO_PATH" "/tmp/hf-backup" || true
+          echo "☁️ Downloading backup from Public HF Repo ($PUBLIC_REPO)..."
+          hf sync "hf://$PUBLIC_REPO" "/tmp/hf-backup" || true
 
-          if [ -f "/tmp/hf-backup/jellyfin-data.qcow2" ]; then
-            echo "📦 Found existing qcow2 image..."
-            mv "/tmp/hf-backup/jellyfin-data.qcow2" "$IMG_PATH"
-            qemu-img info "$IMG_PATH"
-          else
-            echo "🆕 No existing image found, creating a fresh qcow2..."
-            qemu-img create -f qcow2 "$IMG_PATH" "$IMG_SIZE"
-            sudo modprobe nbd max_part=8
+          sudo modprobe nbd max_part=8
+
+          if [ -f "/tmp/hf-backup/$IMG_NAME" ]; then
+            echo "📦 Found existing encrypted image..."
+            mv "/tmp/hf-backup/$IMG_NAME" "$IMG_PATH"
             sudo qemu-nbd --connect=/dev/nbd0 "$IMG_PATH"
-            sudo mkfs.ext4 -F /dev/nbd0
-            sudo qemu-nbd --disconnect /dev/nbd0
+            sleep 2
+
+            echo "🔓 Unlocking LUKS2 encrypted volume..."
+            echo -n "$LUKS_PASSPHRASE" | sudo cryptsetup open --key-file - /dev/nbd0 encrypted_vol
+          else
+            echo "🆕 Creating new sparse qcow2 ($IMG_SIZE)..."
+            qemu-img create -f qcow2 "$IMG_PATH" "$IMG_SIZE"
+            sudo qemu-nbd --connect=/dev/nbd0 "$IMG_PATH"
+            sleep 2
+
+            echo "🔐 Formatting new drive with LUKS2..."
+            echo -n "$LUKS_PASSPHRASE" | sudo cryptsetup luksFormat -q --type luks2 --cipher aes-xts-plain64 --key-size 512 --pbkdf argon2id /dev/nbd0 --key-file -
+            
+            echo "🔓 Opening new LUKS2 container..."
+            echo -n "$LUKS_PASSPHRASE" | sudo cryptsetup open --key-file - /dev/nbd0 encrypted_vol
+            
+            echo "💽 Formatting ext4 filesystem..."
+            sudo mkfs.ext4 -F /dev/mapper/encrypted_vol
           fi
 
-          echo "🔌 Connecting qcow2 via qemu-nbd..."
-          sudo modprobe nbd max_part=8
-          sudo qemu-nbd --connect=/dev/nbd0 "$IMG_PATH"
-          sleep 1
-          sudo mount /dev/nbd0 "$MOUNT_DIR"
+          echo "🔌 Mounting encrypted filesystem..."
+          sudo mount /dev/mapper/encrypted_vol "$MOUNT_DIR"
           sudo chown -R "$(id -u):$(id -g)" "$MOUNT_DIR"
 
-          echo "💽 Disk space after restore:"
-          df -h "${{ github.workspace }}"
+          echo "💽 Disk space after LUKS restore:"
+          df -h "$MOUNT_DIR"
 
       - name: Install Abyss Spotlight Theme (init script)
         run: |
@@ -106,36 +117,27 @@ jobs:
           curl -sSL -o "$MOUNT_DIR/custom-cont-init.d/abyss-spotlight.sh" \
             https://raw.githubusercontent.com/AumGupta/abyss-jellyfin/main/scripts/docker/abyss-spotlight.sh
           chmod +x "$MOUNT_DIR/custom-cont-init.d/abyss-spotlight.sh"
-          echo "✅ Abyss init script installed"
 
-      - name: Generate Xtream .strm Library
+      - name: Generate Xtream .strm Library (Stored in Encrypted Drive)
         env:
           M3U_URL: ${{ secrets.M3U_URL }}
           STRM_OUT: "${{ github.workspace }}/jellyfin-config/media"
           CACHE_DB: "${{ github.workspace }}/jellyfin-config/data/m3u2strm_cache.db"
         run: |
-          if [ -z "$M3U_URL" ]; then
-            echo "ℹ️ No M3U_URL secret set — skipping strm generation"
-          else
+          if [ -n "$M3U_URL" ]; then
             mkdir -p "${{ github.workspace }}/jellyfin-config/media"
             pip install requests -q
-            python3 generate_strm.py
+            python3 generate_strm.py || true
           fi
 
-      - name: Sync Music Library from Hugging Face (Original Creds)
+      - name: Sync Music Library from Hugging Face (Stored in Encrypted Drive)
         env:
           HF_ORIGINAL_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
-          MOUNT_DIR="${{ github.workspace }}/jellyfin-config"
-          MUSIC_DIR="$MOUNT_DIR/media/Music"
+          MUSIC_DIR="${{ github.workspace }}/jellyfin-config/media/Music"
           mkdir -p "$MUSIC_DIR"
-
-          echo "🔑 Logging in with original HF token for music sync..."
           hf auth login --token "$HF_ORIGINAL_TOKEN"
-
-          echo "🎵 Syncing music library (pulling new tracks only)..."
-          hf sync "hf://buckets/solariy/music" "$MUSIC_DIR"
-          echo "✅ Music sync complete"
+          hf sync "hf://buckets/solariy/music" "$MUSIC_DIR" || true
 
       - name: Start Jellyfin
         run: |
@@ -149,10 +151,9 @@ jobs:
             -v "${{ github.workspace }}/jellyfin-config/media:/media:ro" \
             lscr.io/linuxserver/jellyfin:latest
 
-          echo "⏳ Waiting for Jellyfin to be ready..."
           for i in $(seq 1 30); do
             if curl -sf http://localhost:8096/health > /dev/null 2>&1; then
-              echo "✅ Jellyfin is up!"
+              echo "✅ Jellyfin is ready!"
               break
             fi
             sleep 2
@@ -171,29 +172,9 @@ jobs:
           nohup cloudflared tunnel --url http://localhost:8096 --no-chunked-encoding > cloudflare.log 2>&1 &
           sleep 8
           CF_URL=$(grep -o 'https://.*\.trycloudflare\.com' cloudflare.log | head -1)
-          if [ -z "$CF_URL" ]; then
-            echo "Failed to get tunnel URL, log contents:"
-            cat cloudflare.log
-            exit 1
-          fi
-          echo "Tunnel URL: $CF_URL"
-
-          RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "$WORKER_URL/_update" \
-            -H "x-auth: $WORKER_SECRET" \
-            --data "$CF_URL")
-          BODY=$(echo "$RESPONSE" | head -n -1)
-          STATUS=$(echo "$RESPONSE" | tail -n 1)
-
-          echo "Worker response: $BODY (status $STATUS)"
-
-          if [ "$STATUS" != "200" ]; then
-            echo "Failed to update Worker KV"
-            exit 1
-          fi
-
-          echo "Successfully pushed to Worker KV"
-
-          sleep 17400   # ~4h50m runner uptime
+          
+          curl -s -X POST "$WORKER_URL/_update" -H "x-auth: $WORKER_SECRET" --data "$CF_URL"
+          sleep 17400   # ~4h50m runtime
 
       - name: Notify Worker job is done
         if: always()
@@ -201,32 +182,33 @@ jobs:
           curl -s -X POST "https://cool.sulus.workers.dev/_done" \
             -H "x-auth: ${{ secrets.WORKER_SECRET }}"
 
-      - name: Safe Shutdown & Push to Hugging Face
+      - name: Safe Shutdown, Trim, Compress & Push Encrypted Drive
         if: always()
         env:
           HFGAG_TOKEN: ${{ secrets.HFGAG }}
-          REPO_PATH: ${{ secrets.REPO }}
+          PUBLIC_REPO: ${{ secrets.PUBLIC_REPO }}
         run: |
-          IMG_PATH="${{ github.workspace }}/jellyfin-data.qcow2"
+          IMG_NAME="sys-core.bin"
+          IMG_PATH="${{ github.workspace }}/$IMG_NAME"
           MOUNT_DIR="${{ github.workspace }}/jellyfin-config"
 
           docker stop jellyfin || true
           sync
 
-          echo "✂️ Trimming filesystem to release deleted blocks..."
+          echo "✂️ Trimming filesystem inside LUKS..."
           sudo fstrim -v "$MOUNT_DIR" || true
 
-          sudo umount "$MOUNT_DIR"
-          sudo qemu-nbd --disconnect /dev/nbd0
+          sudo umount "$MOUNT_DIR" || true
+          sudo cryptsetup close encrypted_vol || true
+          sudo qemu-nbd --disconnect /dev/nbd0 || true
 
-          SIZE=$(du -sh "$IMG_PATH" | cut -f1)
-          echo "📦 Real qcow2 size after compaction: $SIZE"
-          qemu-img info "$IMG_PATH"
-
-          echo "🔑 Logging in with HFGAG token..."
-          hf auth login --token "$HFGAG_TOKEN"
-
-          echo "☁️ Uploading to Hugging Face ($REPO_PATH)..."
+          echo "🗜️ Compressing qcow2 image..."
           mkdir -p /tmp/hf-backup
-          mv "$IMG_PATH" /tmp/hf-backup/jellyfin-data.qcow2
-          hf sync "/tmp/hf-backup" "hf://$REPO_PATH"
+          qemu-img convert -O qcow2 -c "$IMG_PATH" "/tmp/hf-backup/$IMG_NAME"
+
+          SIZE=$(du -sh "/tmp/hf-backup/$IMG_NAME" | cut -f1)
+          echo "📦 Final encrypted size for upload: $SIZE"
+
+          hf auth login --token "$HFGAG_TOKEN"
+          echo "☁️ Uploading encrypted backup to Public HF Repo ($PUBLIC_REPO)..."
+          hf sync "/tmp/hf-backup" "hf://$PUBLIC_REPO"
