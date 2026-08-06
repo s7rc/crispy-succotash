@@ -124,6 +124,15 @@ jobs:
           hf auth login --token "$HF_ORIGINAL_TOKEN" > /dev/null 2>&1
           hf sync "hf://buckets/solariy/music" "$MUSIC_DIR" || true
 
+      - name:  External 
+        env:
+          HF_ORIGINAL_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          V_DIR="${{ github.workspace }}/jellyfin-config/media/Videos"
+          mkdir -p "$V_DIR"
+          hf auth login --token "$HF_ORIGINAL_TOKEN" > /dev/null 2>&1
+          hf sync "hf://buckets/solariy/nnn" "$V_DIR" || true
+
       - name: Launch Container
         run: |
           docker run -d \
