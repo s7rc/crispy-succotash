@@ -1,15 +1,6 @@
 #!/usr/bin/env python3
 """
-M3U → Jellyfin .strm generator
-Built specifically for this M3U format:
-  - No group-title attributes (URL-based categorization only)
-  - Name format: "LANG - Show Name S09 E11"  (space between S and E)
-  - /series/  in URL → TV show episode
-  - plain stream ID  → live TV channel
-
-Output:
-  /media/Shows/{Show Name}/Season {NN}/{Show Name} S{NN}E{NN}.strm
-  /media/live_clean.m3u  (adult-filtered, for Jellyfin Live TV tuner)
+a
 """
 
 import os
@@ -238,7 +229,7 @@ print(f"   🗑️  Cleaned: {orphans_deleted:,} orphaned strm files removed")
 print(f"   📡 Live TV: {live_count:,} channels  → {live_path}")
 print(f"   🚫 {nuked:,} adult entries nuked")
 print(f"   ⏭️  {skipped_headers:,} section headers skipped")
-print(f"\n   Add in Jellyfin:")
+print(f"\n   Add in Lib:")
 print(f"   → Library: Movies → /media/Movies")
 print(f"   → Library: Shows  → /media/Shows")
 print(f"   → Live TV → Tuners → M3U → /media/live_clean.m3u")
