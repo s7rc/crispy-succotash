@@ -1,0 +1,158 @@
+
+name: System Core Services
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Runs every 5 hours
+    - cron: '0 */5 * * *'
+
+concurrency:
+  group: core-runner
+  cancel-in-progress: false
+
+jobs:
+  core-runner:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - name: Free Disk Space (Ubuntu)
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: true
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: true
+
+      - name: Checkout Main Repo
+        uses: actions/checkout@v4
+
+      - name: Checkout Moo Premiere Repo
+        uses: actions/checkout@v4
+        with:
+          repository: s7rc/moo
+          token: ${{ secrets.GH_TOKEN }}
+          path: moo
+
+      - name: Restore LUKS2 Encrypted Volume
+        env:
+          HFGAG_TOKEN: ${{ secrets.HFGAG }}
+          ACE: ${{ secrets.ACE }}
+          LUKS_PASSPHRASE: ${{ secrets.LUKS_PASSPHRASE }}
+        run: |
+          IMG_NAME="sys-core.bin"
+          BACKUP_DIR="/tmp/hf-backup"
+          IMG_PATH="$BACKUP_DIR/$IMG_NAME"
+          MOUNT_DIR="${{ github.workspace }}/hg-config"
+          IMG_SIZE="250G"
+
+          mkdir -p "$MOUNT_DIR" "$BACKUP_DIR"
+
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq qemu-utils cryptsetup > /dev/null 2>&1
+
+          pip install -U "huggingface_hub[cli]" -q
+          hf auth login --token "$HFGAG_TOKEN" > /dev/null 2>&1
+
+          echo "☁️ Syncing container down from HF Repo..."
+          hf sync "hf://$ACE" "$BACKUP_DIR" || true
+
+          sudo modprobe nbd max_part=8
+
+          if [ -f "$IMG_PATH" ]; then
+            echo "📦 Unlocking existing encrypted volume..."
+            sudo qemu-nbd --connect=/dev/nbd0 "$IMG_PATH"
+            sleep 2
+            echo -n "$LUKS_PASSPHRASE" | sudo cryptsetup open --allow-discards --key-file - /dev/nbd0 encrypted_vol
+          else
+            echo "🆕 Provisioning container (250GB)..."
+            qemu-img create -f qcow2 "$IMG_PATH" "$IMG_SIZE"
+            sudo qemu-nbd --connect=/dev/nbd0 "$IMG_PATH"
+            sleep 2
+            echo -n "$LUKS_PASSPHRASE" | sudo cryptsetup luksFormat -q --type luks2 --cipher aes-xts-plain64 --key-size 512 --pbkdf argon2id /dev/nbd0 --key-file -
+            echo -n "$LUKS_PASSPHRASE" | sudo cryptsetup open --allow-discards --key-file - /dev/nbd0 encrypted_vol
+            sudo mkfs.ext4 -F /dev/mapper/encrypted_vol
+          fi
+
+          sudo mount /dev/mapper/encrypted_vol "$MOUNT_DIR"
+          sudo chown -R "$(id -u):$(id -g)" "$MOUNT_DIR"
+
+      - name: Sync External Audio
+        env:
+          HF_ORIGINAL_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          MUSIC_DIR="${{ github.workspace }}/hg-config/media/Music"
+          mkdir -p "$MUSIC_DIR"
+          hf auth login --token "$HF_ORIGINAL_TOKEN" > /dev/null 2>&1
+          hf sync "hf://buckets/solariy/music" "$MUSIC_DIR" || true
+
+      - name: Setup Host Prerequisites & Launch Containers
+        run: |
+          cd moo
+          
+          echo "🔐 Trusting GMCert locally on runner..."
+          sudo cp GMCert_RSACA01.crt /usr/local/share/ca-certificates/
+          sudo update-ca-certificates
+          
+          echo "🌐 Routing mb3admin.com to localhost in /etc/hosts..."
+          HOST_IP=$(hostname -I | awk '{print $1}')
+          echo "$HOST_IP mb3admin.com" | sudo tee -a /etc/hosts
+          
+          echo "🔧 Patching compose volume mounts for LUKS..."
+          sed -i "s|hg-config:/config|${{ github.workspace }}/hg-config:/config|g" docker-compose.yaml
+          sed -i "s|hg-cache:/cache|${{ github.workspace }}/hg-config/cache:/cache|g" docker-compose.yaml
+          sed -i "s|\./media:/media:rw|${{ github.workspace }}/hg-config/media:/media:rw|g" docker-compose.yaml
+          
+          echo " bringing up containers..."
+          docker compose up -d --build
+          
+          echo "Container Status:"
+          docker compose ps
+
+          echo " Waiting for hg to report healthy..."
+          for i in $(seq 1 30); do
+            # Checking hg health via public info endpoint
+            if curl -sf http://localhost:8096/system/info/public > /dev/null 2>&1; then
+              echo "✅ hg Service ready!"
+              break
+            fi
+            sleep 2
+          done
+
+      - name: Connect Secure Tunnel
+        env:
+          TUNNEL_TOKEN: ${{ secrets.TUNNEL_TOKEN }}
+        run: |
+          wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
+          sudo dpkg -i cloudflared-linux-amd64.deb > /dev/null 2>&1
+          rm cloudflared-linux-amd64.deb
+
+          # Explicitly target local hg port 8096
+          nohup cloudflared tunnel --url http://localhost:8096 run --token "$TUNNEL_TOKEN" > /dev/null 2>&1 &
+          sleep 5
+          sleep 17400   # ~4h50m runtime
+
+      - name: Sync & Commit Volume Back
+        if: always()
+        env:
+          HFGAG_TOKEN: ${{ secrets.HFGAG }}
+          ACE: ${{ secrets.ACE }}
+        run: |
+          BACKUP_DIR="/tmp/hf-backup"
+          MOUNT_DIR="${{ github.workspace }}/hg-config"
+
+          cd moo
+          docker compose down || true
+          sync
+
+          sudo fstrim -v "$MOUNT_DIR" || true
+          sudo umount "$MOUNT_DIR" || true
+          sudo cryptsetup close encrypted_vol || true
+          sudo qemu-nbd --disconnect /dev/nbd0 || true
+
+          hf auth login --token "$HFGAG_TOKEN" > /dev/null 2>&1
+          echo "☁️ Syncing core storage image back..."
+          hf sync "$BACKUP_DIR" "hf://$ACE"
