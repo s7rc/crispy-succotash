@@ -1,21 +1,44 @@
 #!/usr/bin/env python3
 """
-a
+Hello
 """
 
+import argparse
 import os
 import re
-import sys
 import sqlite3
-import requests
+import sys
+import urllib.parse
 from pathlib import Path
 
-M3U_URL  = os.environ.get("M3U_URL", "")
-OUT      = Path(os.environ.get("STRM_OUT", "/media"))
-CACHE_DB = Path(os.environ.get("CACHE_DB", OUT / "m3u2strm_cache.db"))
+import requests
+
+# ── Command-Line Arguments & Config ───────────────────────────────────────────
+parser = argparse.ArgumentParser(description="Generate Jellyfin .strm files and clean M3U playlists from M3U URL(s).")
+parser.add_argument(
+    "-u", "--url",
+    default=os.environ.get("M3U_URL", ""),
+    help="M3U URL or comma-separated URLs (defaults to M3U_URL env var)"
+)
+parser.add_argument(
+    "-o", "--out",
+    default=os.environ.get("STRM_OUT", "media"),
+    help="Output directory (defaults to STRM_OUT env var or ./media)"
+)
+parser.add_argument(
+    "-c", "--cache",
+    default=os.environ.get("CACHE_DB", ""),
+    help="Path to SQLite cache file (default: <OUT>/m3u2strm_cache.db)"
+)
+
+args = parser.parse_args()
+
+M3U_URL = args.url.strip()
+OUT = Path(args.out)
+CACHE_DB = Path(args.cache) if args.cache else OUT / "m3u2strm_cache.db"
 
 if not M3U_URL:
-    print("❌ M3U_URL not set — exiting")
+    print("❌ Error: No M3U URL provided. Supply -u/--url or set the M3U_URL environment variable.")
     sys.exit(1)
 
 # ── Adult content filter ───────────────────────────────────────────────────────
@@ -31,18 +54,32 @@ def is_adult(text: str) -> bool:
     return any(kw in t for kw in ADULT_KEYWORDS)
 
 # ── Name helpers ───────────────────────────────────────────────────────────────
-# Matches: "EN - ", "FR - ", "AR - ", "DE - " etc. at start of name
 LANG_PREFIX = re.compile(r"^[A-Z]{2,3}\s*-\s*")
-
-# Matches: S09 E11, S9 E1, S09E11, s9e1 etc.
 EP_PATTERN  = re.compile(r"[Ss](\d{1,2})\s*[Ee](\d{1,2})")
-
-# Matches subtitle/dub tags like [SUB], [DUB], [ENG SUB]
 TAG_PATTERN = re.compile(r"\s*\[[^\]]*\]\s*")
 
 def safe(name: str) -> str:
-    """Strip filesystem-illegal chars."""
-    return re.sub(r'[<>:"/\\|?*\x00-\x1f]', '', name).strip(". ")[:120] or "Unknown"
+    """Strip filesystem-illegal chars and trim length for Windows compatibility."""
+    # Replace filesystem illegal characters
+    s = re.sub(r'[<>:"/\\|?*\x00-\x1f]', '', name)
+    # Strip trailing spaces, dots, and commas (Windows path requirements)
+    s = s.strip(". ,_-")
+    # Cap length to 75 characters to prevent Windows MAX_PATH (260 char limit) issues
+    return s[:75].strip(". ,_-") or "Unknown"
+
+def extract_title(meta_line: str) -> str:
+    """Extract clean title from #EXTINF line, handling extra commas in attributes."""
+    if "," not in meta_line:
+        return ""
+    # Split on the LAST comma to separate metadata from the actual title
+    title = meta_line.rsplit(",", 1)[-1].strip()
+    
+    # If the extracted title contains leftover M3U attributes, strip them out
+    if "=" in title:
+        title = re.sub(r'[a-zA-Z0-9\-_]+="[^"]*"', '', title)
+        title = re.sub(r'[a-zA-Z0-9\-_]+=[^\s,]*', '', title)
+        title = title.strip(" ,.-")
+    return title
 
 def strip_lang(name: str) -> str:
     """Remove leading language prefix like 'EN - '."""
@@ -60,20 +97,19 @@ def init_db(db_path: Path):
     conn.commit()
     return conn
 
-import urllib.parse
-
-# ── Parse + categorise ─────────────────────────────────────────────────────────
+# ── Main Processing Logic ──────────────────────────────────────────────────────
 nuked = 0
 skipped_headers = 0
 
 OUT.mkdir(parents=True, exist_ok=True)
-shows_dir      = OUT / "Shows"
-movies_dir     = OUT / "Movies"
+shows_dir  = OUT / "Shows"
+movies_dir = OUT / "Movies"
 
 shows_total    = 0
 shows_written  = 0
 movies_total   = 0
 movies_written = 0
+total_live     = 0
 
 print(f"🗄️  Loading SQLite cache from {CACHE_DB}...")
 conn = init_db(CACHE_DB)
@@ -81,7 +117,6 @@ cache_dict = {row[0]: row[1] for row in conn.execute("SELECT path, url FROM strm
 new_cache = {}
 seen_paths = set()
 
-# ── Download and Process Each M3U ──────────────────────────────────────────────
 headers = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36"
 }
@@ -96,15 +131,15 @@ for u in urls:
     except Exception as e:
         print(f"❌ Download failed for {u}: {e}")
         continue
-    
+
     print(f"   {len(lines):,} lines — {len(lines)//2:,} entries approx")
-    
+
     domain = urllib.parse.urlparse(u).netloc.replace("www.", "").split(":")[0]
-    provider_name = safe(domain.split(".")[0][:3]) or "custom"
-    
+    provider_name = safe(domain.split(".")[0]) or "custom"
+
     live_m3u = ["#EXTM3U"]
     i = 0
-    
+
     while i < len(lines):
         line = lines[i].strip()
 
@@ -116,10 +151,9 @@ for u in urls:
         url  = lines[i + 1].strip() if i + 1 < len(lines) else ""
         i   += 2
 
-        # Name is everything after the last comma in #EXTINF
-        name = meta.split(",", 1)[-1].strip() if "," in meta else ""
+        name = extract_title(meta)
 
-        # Skip section headers like "##### ENGLISH #####"
+        # Skip section headers
         if re.match(r"^#+\s*[A-Z ]+\s*#+$", name):
             skipped_headers += 1
             continue
@@ -133,18 +167,15 @@ for u in urls:
         is_movie  = "/movie/"  in url.lower()
 
         if is_series:
-            # ── Series → .strm ────────────────────────────────────────────────────
-            clean = strip_lang(name)          # "Bonanza S09 E11"
+            clean = strip_lang(name)
             ep_m  = EP_PATTERN.search(clean)
 
             if not ep_m:
-                # No episode pattern — skip (likely a trailer/extra)
                 continue
 
             season  = int(ep_m.group(1))
             episode = int(ep_m.group(2))
 
-            # Show name = everything before the SxxExx, strip tags like [SUB]
             show_raw = clean[:ep_m.start()].strip(" -_|")
             show_raw = TAG_PATTERN.sub(" ", show_raw).strip()
             show     = safe(show_raw) or "Unknown Show"
@@ -159,18 +190,15 @@ for u in urls:
             shows_total += 1
 
             if cache_dict.get(path_str) == url:
-                continue  # Cached!
+                continue
 
             write_strm(strm_path, url)
             shows_written += 1
 
         elif is_movie:
-            # ── Movie → .strm ─────────────────────────────────────────────────────
-            # Format: "LANG - Movie Title - YEAR [Tag]"
-            clean = strip_lang(name)                           # "Movie Title - 2025 [VOSTFR]"
-            clean = TAG_PATTERN.sub("", clean).strip()         # "Movie Title - 2025"
+            clean = strip_lang(name)
+            clean = TAG_PATTERN.sub("", clean).strip()
 
-            # Extract year from LAST " - YEAR" at end
             year_m = re.search(r"\s*-\s*(\d{4})\s*$", clean)
             if year_m:
                 year  = year_m.group(1)
@@ -179,8 +207,8 @@ for u in urls:
                 year  = ""
                 title = clean.strip()
 
-            title  = safe(title) or "Unknown Movie"
-            folder = f"{title} ({year})" if year else title
+            title     = safe(title) or "Unknown Movie"
+            folder    = f"{title} ({year})" if year else title
             strm_path = movies_dir / folder / f"{folder}.strm"
             path_str  = str(strm_path)
 
@@ -189,21 +217,21 @@ for u in urls:
             movies_total += 1
 
             if cache_dict.get(path_str) == url:
-                continue  # Cached!
+                continue
 
             write_strm(strm_path, url)
             movies_written += 1
 
         else:
-            # ── Live TV → filtered M3U ─────────────────────────────────────────────
             live_m3u.append(meta)
             live_m3u.append(url)
 
-    # ── Write live TV M3U for this specific provider ───────────────────────────
+    # Write live TV M3U for this provider
     if len(live_m3u) > 1:
         live_path = OUT / f"live_clean_{provider_name}.m3u"
         live_path.write_text("\n".join(live_m3u), encoding="utf-8")
         live_count = (len(live_m3u) - 1) // 2
+        total_live += live_count
         print(f"   📡 Wrote {live_count:,} live channels to {live_path.name}")
 
 # ── Cleanup & Save Cache ───────────────────────────────────────────────────────
@@ -213,7 +241,7 @@ for p in orphans:
     try:
         Path(p).unlink(missing_ok=True)
         orphans_deleted += 1
-    except:
+    except Exception:
         pass
 
 conn.execute("DELETE FROM strm_cache")
@@ -225,11 +253,11 @@ conn.close()
 print(f"\n✅ Done!")
 print(f"   🎬 Movies:  {movies_total:,} total  ({movies_written:,} newly written)")
 print(f"   📺 Series:  {shows_total:,} total  ({shows_written:,} newly written)")
+print(f"   📡 Live TV: {total_live:,} total channels written")
 print(f"   🗑️  Cleaned: {orphans_deleted:,} orphaned strm files removed")
-print(f"   📡 Live TV: {live_count:,} channels  → {live_path}")
 print(f"   🚫 {nuked:,} adult entries nuked")
 print(f"   ⏭️  {skipped_headers:,} section headers skipped")
-print(f"\n   Add in Lib:")
-print(f"   → Library: Movies → /media/Movies")
-print(f"   → Library: Shows  → /media/Shows")
-print(f"   → Live TV → Tuners → M3U → /media/live_clean.m3u")
+print(f"\n   Add in Jellyfin:")
+print(f"   → Library: Movies → {OUT.resolve() / 'Movies'}")
+print(f"   → Library: Shows  → {OUT.resolve() / 'Shows'}")
+print(f"   → Live TV → Tuners → M3U → {OUT.resolve() / 'live_clean_<provider>.m3u'}")
