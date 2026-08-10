@@ -80,6 +80,19 @@ jobs:
           sudo mount /dev/mapper/encrypted_vol "$MOUNT_DIR"
           sudo chown -R "$(id -u):$(id -g)" "$MOUNT_DIR"
 
+      - name: Generate Stream Indices
+        env:
+          M3U_URL: ${{ secrets.M3 }}
+          STRM_OUT: "${{ github.workspace }}/hg-config/media"
+          CACHE_DB: "${{ github.workspace }}/hg-config/data/m3u2strm_cache.db"
+        run: |
+          if [ -n "$M3U_URL" ]; then
+            mkdir -p "${{ github.workspace }}/hg-config/media"
+            pip install requests -q
+            python3 generate_strm.py || true
+          fi
+
+
       - name: Sync External Audio
         env:
           HF_ORIGINAL_TOKEN: ${{ secrets.HF_TOKEN }}
