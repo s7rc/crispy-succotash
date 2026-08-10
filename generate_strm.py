@@ -14,7 +14,7 @@ from pathlib import Path
 import requests
 
 # ── Command-Line Arguments & Config ───────────────────────────────────────────
-parser = argparse.ArgumentParser(description="Generate Jellyfin .strm files and clean M3U playlists from M3U URL(s).")
+parser = argparse.ArgumentParser(description="Generate Lib .strm files and clean M3U playlists from M3U URL(s).")
 parser.add_argument(
     "-u", "--url",
     default=os.environ.get("M3U_URL", ""),
@@ -257,7 +257,7 @@ print(f"   📡 Live TV: {total_live:,} total channels written")
 print(f"   🗑️  Cleaned: {orphans_deleted:,} orphaned strm files removed")
 print(f"   🚫 {nuked:,} adult entries nuked")
 print(f"   ⏭️  {skipped_headers:,} section headers skipped")
-print(f"\n   Add in Jellyfin:")
+print(f"\n   Add in Lib:")
 print(f"   → Library: Movies → {OUT.resolve() / 'Movies'}")
 print(f"   → Library: Shows  → {OUT.resolve() / 'Shows'}")
 print(f"   → Live TV → Tuners → M3U → {OUT.resolve() / 'live_clean_<provider>.m3u'}")
