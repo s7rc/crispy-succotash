@@ -1,0 +1,151 @@
+name: System Core Service (Encrypted VHDX Windows)
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 */5 * * *'
+
+concurrency:
+  group: core-runner
+  cancel-in-progress: false
+
+jobs:
+  core-runner:
+    runs-on: windows-latest
+    timeout-minutes: 350
+    env:
+      JF_DIR: ${{ github.workspace }}\jellyfin-server
+      CONFIG_DIR: ${{ github.workspace }}\jellyfin-config
+      MEDIA_DIR: ${{ github.workspace }}\jellyfin-config\media
+      BACKUP_DIR: ${{ runner.temp }}\hf-backup
+      VHDX_PATH: ${{ runner.temp }}\hf-backup\sys-core.vhdx
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Python Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install "huggingface_hub[cli]" yt-dlp requests
+
+      - name: Install Jellyfin Server
+        run: |
+          New-Item -ItemType Directory -Force -Path $env:JF_DIR
+          $jf_url = "https://repo.jellyfin.org/releases/server/windows/stable/combined/jellyfin_10.9.11_windows-x64.zip"
+          Invoke-WebRequest -Uri $jf_url -OutFile jellyfin.zip
+          Expand-Archive -Path jellyfin.zip -DestinationPath $env:JF_DIR -Force
+
+      - name: Restore & Unlock VHDX Volume
+        env:
+          HFGAG_TOKEN: ${{ secrets.HFGAG }}
+          PUBLIC_REPO: ${{ secrets.PUBLIC_REPO }}
+          LUKS_PASSPHRASE: ${{ secrets.LUKS_PASSPHRASE }}
+        run: |
+          New-Item -ItemType Directory -Force -Path $env:BACKUP_DIR
+          
+          huggingface-cli login --token $env:HFGAG_TOKEN
+          Write-Host "☁️ Syncing VHDX container down from HuggingFace..."
+          huggingface-cli sync "hf://$env:PUBLIC_REPO" "$env:BACKUP_DIR"
+          
+          if (Test-Path $env:VHDX_PATH) {
+              Write-Host "📦 Mounting existing BitLocker-encrypted VHDX..."
+              $disk = Mount-VHD -Path $env:VHDX_PATH -PassThru | Get-Disk
+              
+              # Ensure drive letter V: is assigned
+              $partition = $disk | Get-Partition | Where-Object { $_.DriveLetter -ne $null }
+              if (-not $partition) {
+                  $disk | Get-Partition | Set-Partition -NewDriveLetter V
+              }
+              
+              # Unlock BitLocker volume using password
+              Write-Host "🔓 Unlocking BitLocker volume..."
+              $securePassword = ConvertTo-SecureString $env:LUKS_PASSPHRASE -AsPlainText -Force
+              Unlock-BitLocker -MountPoint "V:" -Password $securePassword
+          } else {
+              Write-Host "🆕 Provisioning new dynamic 200GB VHDX..."
+              New-VHD -Path $env:VHDX_PATH -SizeBytes 200GB -Dynamic
+              
+              $disk = Mount-VHD -Path $env:VHDX_PATH -PassThru | Get-Disk
+              $disk | Initialize-Disk -PartitionStyle GPT
+              $disk | New-Partition -DriveLetter V -UseMaximumSize
+              Format-Volume -DriveLetter V -FileSystem NTFS -Confirm:$false -Force
+              
+              # Enable BitLocker encryption with password protection
+              Write-Host "🔒 Encrypting new VHDX volume with BitLocker..."
+              $securePassword = ConvertTo-SecureString $env:LUKS_PASSPHRASE -AsPlainText -Force
+              Enable-BitLocker -MountPoint "V:" -PasswordProtector -Password $securePassword -EncryptionMethod XtsAes256 -UsedSpaceOnly
+          }
+
+          New-Item -ItemType Directory -Force -Path $env:CONFIG_DIR
+          New-Item -ItemType SymbolicLink -Path "$env:CONFIG_DIR\mount_check" -Target "V:\" -ErrorAction SilentlyContinue
+
+      - name: Apply Subsystem Themes
+        run: |
+          $ThemeDir = "V:\custom-cont-init.d"
+          New-Item -ItemType Directory -Force -Path $ThemeDir
+          Invoke-WebRequest -Uri "https://raw.githubusercontent.com/AumGupta/abyss-jellyfin/main/scripts/docker/abyss-spotlight.sh" -OutFile "$ThemeDir\abyss-spotlight.sh"
+
+      - name: Generate Stream Indices
+        env:
+          M3U_URL: ${{ secrets.M3 }}
+          STRM_OUT: "V:\media"
+        run: |
+          if ($env:M3U_URL) {
+              New-Item -ItemType Directory -Force -Path $env:STRM_OUT
+              python generate_strm.py
+          }
+
+
+
+      - name: Launch Native Jellyfin Service
+        run: |
+          $ExePath = "$env:JF_DIR\jellyfin.exe"
+          $Args = @(
+              "--datadir", "V:\",
+              "--cachedir", "V:\cache",
+              "--webdir", "$env:JF_DIR\jellyfin-web"
+          )
+          Start-Process -FilePath $ExePath -ArgumentList $Args -NoNewWindow
+          
+          for ($i=1; $i -le 30; $i++) {
+              try {
+                  $response = Invoke-WebRequest -Uri "http://localhost:8096/health" -UseBasicParsing
+                  if ($response.StatusCode -eq 200) {
+                      Write-Host "✅ Service ready!"
+                      break
+                  }
+              } catch {
+                  Start-Sleep -Seconds 2
+              }
+          }
+
+      - name: Connect Secure Tunnel
+        env:
+          TUNNEL_TOKEN: ${{ secrets.TUNNEL_TOKEN }}
+        run: |
+          Invoke-WebRequest -Uri "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe" -OutFile "cloudflared.exe"
+          Start-Process -FilePath ".\cloudflared.exe" -ArgumentList "tunnel --url http://localhost:8096 run --token $env:TUNNEL_TOKEN" -NoNewWindow
+          Start-Sleep -Seconds 17400
+
+      - name: Sync & Commit Volume Back
+        if: always()
+        env:
+          HFGAG_TOKEN: ${{ secrets.HFGAG }}
+          PUBLIC_REPO: ${{ secrets.PUBLIC_REPO }}
+        run: |
+          Write-Host "Stopping Jellyfin..."
+          Stop-Process -Name "jellyfin" -ErrorAction SilentlyContinue
+          
+          Write-Host "Locking BitLocker volume and dismounting VHDX..."
+          # Lock drive explicitly before dismounting
+          Lock-BitLocker -MountPoint "V:" -ForceDismount
+          Dismount-VHD -Path $env:VHDX_PATH -ErrorAction SilentlyContinue
+          
+          huggingface-cli login --token $env:HFGAG_TOKEN
+          Write-Host "☁️ Syncing encrypted VHDX back to HuggingFace..."
+          huggingface-cli sync "$env:BACKUP_DIR" "hf://$env:PUBLIC_REPO"
