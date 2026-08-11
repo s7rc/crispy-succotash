@@ -47,9 +47,10 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force -Path $env:BACKUP_DIR
           
-          huggingface-cli login --token $env:HFGAG_TOKEN
+          # Upgraded to modern 'hf' CLI
+          hf auth login --token $env:HFGAG_TOKEN
           Write-Host "☁️ Syncing VHDX container down from HuggingFace..."
-          huggingface-cli sync "hf://$env:PUBLIC_REPO" "$env:BACKUP_DIR"
+          hf sync "hf://$env:PUBLIC_REPO" "$env:BACKUP_DIR"
           
           if (Test-Path $env:VHDX_PATH) {
               Write-Host "📦 Mounting existing BitLocker-encrypted VHDX..."
@@ -75,11 +76,17 @@ jobs:
               Write-Host "🔒 Encrypting new VHDX volume with BitLocker..."
               $securePassword = ConvertTo-SecureString $env:LUKS_PASSPHRASE -AsPlainText -Force
               Enable-BitLocker -MountPoint "V:" -PasswordProtector -Password $securePassword -EncryptionMethod XtsAes256 -UsedSpaceOnly
+              
+              # Wait until BitLocker completes initial encryption pass
+              while ((Get-BitLockerVolume -MountPoint "V:").VolumeStatus -ne 'FullyEncrypted') {
+                  Write-Host "Waiting for BitLocker encryption to complete..."
+                  Start-Sleep -Seconds 3
+              }
+              Write-Host "✅ BitLocker encryption complete."
           }
 
           New-Item -ItemType Directory -Force -Path $env:CONFIG_DIR
           New-Item -ItemType SymbolicLink -Path "$env:CONFIG_DIR\mount_check" -Target 'V:\' -ErrorAction SilentlyContinue
-
       - name: Apply Subsystem Themes
         run: |
           $ThemeDir = 'V:\custom-cont-init.d'
@@ -146,6 +153,10 @@ jobs:
           Write-Host "Locking BitLocker volume and dismounting VHDX..."
           Lock-BitLocker -MountPoint "V:" -ForceDismount
           Dismount-VHD -Path $env:VHDX_PATH -ErrorAction SilentlyContinue
+          
+          hf auth login --token $env:HFGAG_TOKEN
+          Write-Host "☁️ Syncing encrypted VHDX back to HuggingFace..."
+          hf sync "$env:BACKUP_DIR" "hf://$env:PUBLIC_REPO"
           
           huggingface-cli login --token $env:HFGAG_TOKEN
           Write-Host "☁️ Syncing encrypted VHDX back to HuggingFace..."
