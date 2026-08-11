@@ -103,14 +103,6 @@ jobs:
               python generate_strm.py
           }
 
-      - name: Sync External Audio
-        env:
-          HF_ORIGINAL_TOKEN: ${{ secrets.HF_TOKEN }}
-        run: |
-          $MusicDir = 'V:\media\Music'
-          New-Item -ItemType Directory -Force -Path $MusicDir
-          huggingface-cli login --token $env:HF_ORIGINAL_TOKEN
-          huggingface-cli sync "hf://buckets/solariy/music" "$MusicDir"
 
       - name: Launch Native Jellyfin Service
         run: |
