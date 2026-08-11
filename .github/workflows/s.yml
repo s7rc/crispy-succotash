@@ -14,12 +14,15 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 350
     env:
-      JF_DIR: ${{ github.workspace }}\jellyfin-server
-      CONFIG_DIR: ${{ github.workspace }}\jellyfin-config
-      MEDIA_DIR: ${{ github.workspace }}\jellyfin-config\media
-      BACKUP_DIR: ${{ runner.temp }}\hf-backup
-      VHDX_PATH: ${{ runner.temp }}\hf-backup\sys-core.vhdx
+      JF_DIR: '${{ github.workspace }}\jellyfin-server'
+      CONFIG_DIR: '${{ github.workspace }}\jellyfin-config'
+      MEDIA_DIR: '${{ github.workspace }}\jellyfin-config\media'
     steps:
+      - name: Setup Dynamic Environment
+        run: |
+          "BACKUP_DIR=$env:RUNNER_TEMP\hf-backup" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "VHDX_PATH=$env:RUNNER_TEMP\hf-backup\sys-core.vhdx" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
       - name: Checkout Repo
         uses: actions/checkout@v4
 
@@ -56,13 +59,11 @@ jobs:
               Write-Host "📦 Mounting existing BitLocker-encrypted VHDX..."
               $disk = Mount-VHD -Path $env:VHDX_PATH -PassThru | Get-Disk
               
-              # Ensure drive letter V: is assigned
               $partition = $disk | Get-Partition | Where-Object { $_.DriveLetter -ne $null }
               if (-not $partition) {
                   $disk | Get-Partition | Set-Partition -NewDriveLetter V
               }
               
-              # Unlock BitLocker volume using password
               Write-Host "🔓 Unlocking BitLocker volume..."
               $securePassword = ConvertTo-SecureString $env:LUKS_PASSPHRASE -AsPlainText -Force
               Unlock-BitLocker -MountPoint "V:" -Password $securePassword
@@ -75,18 +76,17 @@ jobs:
               $disk | New-Partition -DriveLetter V -UseMaximumSize
               Format-Volume -DriveLetter V -FileSystem NTFS -Confirm:$false -Force
               
-              # Enable BitLocker encryption with password protection
               Write-Host "🔒 Encrypting new VHDX volume with BitLocker..."
               $securePassword = ConvertTo-SecureString $env:LUKS_PASSPHRASE -AsPlainText -Force
               Enable-BitLocker -MountPoint "V:" -PasswordProtector -Password $securePassword -EncryptionMethod XtsAes256 -UsedSpaceOnly
           }
 
           New-Item -ItemType Directory -Force -Path $env:CONFIG_DIR
-          New-Item -ItemType SymbolicLink -Path "$env:CONFIG_DIR\mount_check" -Target "V:\" -ErrorAction SilentlyContinue
+          New-Item -ItemType SymbolicLink -Path "$env:CONFIG_DIR\mount_check" -Target 'V:\' -ErrorAction SilentlyContinue
 
       - name: Apply Subsystem Themes
         run: |
-          $ThemeDir = "V:\custom-cont-init.d"
+          $ThemeDir = 'V:\custom-cont-init.d'
           New-Item -ItemType Directory -Force -Path $ThemeDir
           Invoke-WebRequest -Uri "https://raw.githubusercontent.com/AumGupta/abyss-jellyfin/main/scripts/docker/abyss-spotlight.sh" -OutFile "$ThemeDir\abyss-spotlight.sh"
 
@@ -100,7 +100,14 @@ jobs:
               python generate_strm.py
           }
 
-
+      - name: Sync External Audio
+        env:
+          HF_ORIGINAL_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          $MusicDir = 'V:\media\Music'
+          New-Item -ItemType Directory -Force -Path $MusicDir
+          huggingface-cli login --token $env:HF_ORIGINAL_TOKEN
+          huggingface-cli sync "hf://buckets/solariy/music" "$MusicDir"
 
       - name: Launch Native Jellyfin Service
         run: |
@@ -142,7 +149,6 @@ jobs:
           Stop-Process -Name "jellyfin" -ErrorAction SilentlyContinue
           
           Write-Host "Locking BitLocker volume and dismounting VHDX..."
-          # Lock drive explicitly before dismounting
           Lock-BitLocker -MountPoint "V:" -ForceDismount
           Dismount-VHD -Path $env:VHDX_PATH -ErrorAction SilentlyContinue
           
