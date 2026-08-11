@@ -1,8 +1,3 @@
-#!/usr/bin/env python3
-"""
-Hello
-"""
-
 import argparse
 import os
 import re
@@ -10,6 +5,11 @@ import sqlite3
 import sys
 import urllib.parse
 from pathlib import Path
+
+# Force UTF-8 encoding for standard output on Windows
+if sys.platform == "win32":
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 import requests
 
