@@ -93,7 +93,7 @@ jobs:
       - name: Generate Stream Indices
         env:
           M3U_URL: ${{ secrets.M3 }}
-          STRM_OUT: "V:\media"
+          STRM_OUT: 'V:\media'
         run: |
           if ($env:M3U_URL) {
               New-Item -ItemType Directory -Force -Path $env:STRM_OUT
