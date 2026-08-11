@@ -5,16 +5,16 @@ on:
   schedule:
     - cron: '0 */5 * * *'
 
-#concurrency:
-#  group: core-runner
-#  cancel-in-progress: false
+concurrency:
+  group: core-runner
+  cancel-in-progress: false
 
 jobs:
   core-runner:
     runs-on: windows-latest
     timeout-minutes: 350
     env:
-      JF_DIR: '${{ github.workspace }}\jellyfin-server'
+      JF_DIR: 'C:\Program Files\Jellyfin\Server'
       CONFIG_DIR: '${{ github.workspace }}\jellyfin-config'
       MEDIA_DIR: '${{ github.workspace }}\jellyfin-config\media'
     steps:
@@ -31,17 +31,13 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install Python Dependencies
+      - name: Install Dependencies & Jellyfin via Chocolatey
         run: |
           python -m pip install --upgrade pip
           pip install "huggingface_hub[cli]" yt-dlp requests
-
-      - name: Install Jellyfin Server
-        run: |
-          New-Item -ItemType Directory -Force -Path $env:JF_DIR
-          $jf_url = "https://repo.jellyfin.org/releases/server/windows/stable/combined/jellyfin_10.9.11_windows-x64.zip"
-          Invoke-WebRequest -Uri $jf_url -OutFile jellyfin.zip
-          Expand-Archive -Path jellyfin.zip -DestinationPath $env:JF_DIR -Force
+          
+          # Install Jellyfin Server silently
+          choco install jellyfin -y --no-progress
 
       - name: Restore & Unlock VHDX Volume
         env:
@@ -114,8 +110,7 @@ jobs:
           $ExePath = "$env:JF_DIR\jellyfin.exe"
           $Args = @(
               "--datadir", "V:\",
-              "--cachedir", "V:\cache",
-              "--webdir", "$env:JF_DIR\jellyfin-web"
+              "--cachedir", "V:\cache"
           )
           Start-Process -FilePath $ExePath -ArgumentList $Args -NoNewWindow
           
