@@ -1,4 +1,3 @@
-
 name: System Core Services
 
 on:
@@ -33,9 +32,9 @@ jobs:
       - name: Checkout Moo Premiere Repo
         uses: actions/checkout@v4
         with:
-          repository: s7rc/moo
+          repository: s7rc/mee
           token: ${{ secrets.GH_TOKEN }}
-          path: moo
+          path: mee
 
       - name: Restore LUKS2 Encrypted Volume
         env:
@@ -78,7 +77,10 @@ jobs:
           fi
 
           sudo mount /dev/mapper/encrypted_vol "$MOUNT_DIR"
-          sudo chown -R "$(id -u):$(id -g)" "$MOUNT_DIR"
+          
+          # Fix ownership & permissions so  (PUID 1001 / PGID 116) can write to data volume
+          sudo chown -R 1001:116 "$MOUNT_DIR"
+          sudo chmod -R 775 "$MOUNT_DIR"
 
       - name: Generate Stream Indices
         env:
@@ -92,7 +94,6 @@ jobs:
             python3 generate_strm.py || true
           fi
 
-
       - name: Sync External Audio
         env:
           HF_ORIGINAL_TOKEN: ${{ secrets.HF_TOKEN }}
@@ -102,32 +103,26 @@ jobs:
           hf auth login --token "$HF_ORIGINAL_TOKEN" > /dev/null 2>&1
           hf sync "hf://buckets/solariy/music" "$MUSIC_DIR" || true
 
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GH_TOKEN }}
+
       - name: Setup Host Prerequisites & Launch Containers
         run: |
-          cd moo
+          cd mee
           
-          echo "🔐 Trusting GMCert locally on runner..."
-          sudo cp GMCert_RSACA01.crt /usr/local/share/ca-certificates/
-          sudo update-ca-certificates
-          
-          echo "🌐 Routing mb3admin.com to localhost in /etc/hosts..."
-          HOST_IP=$(hostname -I | awk '{print $1}')
-          echo "$HOST_IP mb3admin.com" | sudo tee -a /etc/hosts
-          
-          echo "🔧 Patching compose volume mounts for LUKS..."
-          sed -i "s|hg-config:/config|${{ github.workspace }}/hg-config:/config|g" docker-compose.yaml
-          sed -i "s|hg-cache:/cache|${{ github.workspace }}/hg-config/cache:/cache|g" docker-compose.yaml
-          sed -i "s|\./media:/media:rw|${{ github.workspace }}/hg-config/media:/media:rw|g" docker-compose.yaml
-          
-          echo " bringing up containers..."
-          docker compose up -d --build
+          echo "🚀 Pulling pre-built GHCR images and bringing up containers..."
+          docker compose pull
+          docker compose up -d
           
           echo "Container Status:"
           docker compose ps
 
           echo " Waiting for hg to report healthy..."
           for i in $(seq 1 30); do
-            # Checking hg health via public info endpoint
             if curl -sf http://localhost:8096/system/info/public > /dev/null 2>&1; then
               echo "✅ hg Service ready!"
               break
@@ -157,7 +152,7 @@ jobs:
           BACKUP_DIR="/tmp/hf-backup"
           MOUNT_DIR="${{ github.workspace }}/hg-config"
 
-          cd moo
+          cd mee
           docker compose down || true
           sync
 
