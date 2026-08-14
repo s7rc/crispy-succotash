@@ -98,14 +98,14 @@ jobs:
             python3 generate_strm.py || true
           fi
 
-  #    - name: Sync External Audio
-  #      env:
-  #        HF_ORIGINAL_TOKEN: ${{ secrets.HF_TOKEN }}
-  #      run: |
-  #        MUSIC_DIR="${{ github.workspace }}/hg-config/media/Music"
-  #        mkdir -p "$MUSIC_DIR"
-  #        hf auth login --token "$HF_ORIGINAL_TOKEN" > /dev/null 2>&1
-  #        hf sync "hf://buckets/solariy/music" "$MUSIC_DIR" || true
+      - name: Sync External Audio
+        env:
+          HF_ORIGINAL_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          MUSIC_DIR="${{ github.workspace }}/hg-config/media/Music"
+          mkdir -p "$MUSIC_DIR"
+          hf auth login --token "$HF_ORIGINAL_TOKEN" > /dev/null 2>&1
+          hf sync "hf://buckets/solariy/music" "$MUSIC_DIR" || true
 
       - name: Log in to GHCR
         uses: docker/login-action@v3
