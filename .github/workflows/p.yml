@@ -115,8 +115,8 @@ jobs:
           cd mee
           
           echo "🚀 Pulling pre-built GHCR images and bringing up containers..."
-          docker compose pull
-          docker compose up -d
+          sudo docker compose pull
+          sudo docker compose up -d
           
           echo "Container Status:"
           docker compose ps
@@ -144,7 +144,7 @@ jobs:
           sleep 17400   # ~4h50m runtime
 
       - name: Sync & Commit Volume Back
-        if: always()
+        #if: always()
         env:
           HFGAG_TOKEN: ${{ secrets.HFGAG }}
           ACE: ${{ secrets.ACE }}
