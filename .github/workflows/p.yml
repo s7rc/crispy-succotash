@@ -6,9 +6,9 @@ on:
     # Runs every 5 hours
     - cron: '0 */5 * * *'
 
-concurrency:
-  group: core-runner
-  cancel-in-progress: false
+#concurrency:
+#  group: core-runner
+#  cancel-in-progress: false
 
 jobs:
   core-runner:
