@@ -10,9 +10,9 @@ permissions:
   contents: read
   packages: read
 
-#concurrency:
-#  group: core-runner
-#  cancel-in-progress: false
+concurrency:
+  group: core-runner
+  cancel-in-progress: false
 
 jobs:
   core-runner:
@@ -33,7 +33,7 @@ jobs:
       - name: Checkout Main Repo
         uses: actions/checkout@v4
 
-      - name: Checkout Moo Premiere Repo
+      - name: Checkout Repo
         uses: actions/checkout@v4
         with:
           repository: s7rc/mee
@@ -148,7 +148,7 @@ jobs:
           sleep 17400   # ~4h50m runtime
 
       - name: Sync & Commit Volume Back
-        #if: always()
+        if: always()
         env:
           HFGAG_TOKEN: ${{ secrets.HFGAG }}
           ACE: ${{ secrets.ACE }}
