@@ -1,0 +1,70 @@
+name: System Core Services
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Runs every 5 hours
+    - cron: '0 */5 * * *'
+
+permissions:
+  contents: read
+  packages: read
+
+concurrency:
+  group: core-runner
+  cancel-in-progress: false
+
+jobs:
+  core-runner:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - name: Free Disk Space (Ubuntu)
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: true
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: true
+
+      - name: Checkout Main Repo
+        uses: actions/checkout@v4
+
+      - name: Checkout Repo
+        uses: actions/checkout@v4
+        with:
+          repository: s7rc/mee
+          token: ${{ secrets.GH_TOKEN }}
+          path: mee
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Host Prerequisites & Launch Containers
+        run: |
+          cd mee
+          
+          echo "🚀 Pulling pre-built GHCR images and bringing up containers..."
+          docker compose pull
+          docker compose up -d
+          
+          echo "Container Status:"
+          docker compose ps
+
+          echo " Waiting for hg to report healthy..."
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:8096/system/info/public > /dev/null 2>&1; then
+              echo "✅ hg Service ready!"
+              break
+            fi
+            sleep 2
+          done
+
+
