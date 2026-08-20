@@ -64,7 +64,7 @@ jobs:
               echo "✅ hg Service ready!"
               break
             fi
-            sleep 2
+            sleep 17400
           done
 
 
