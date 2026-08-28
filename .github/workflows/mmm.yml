@@ -1,4 +1,4 @@
-name: System Core Services
+name: System Core Serviceses
 
 on:
   workflow_dispatch:
